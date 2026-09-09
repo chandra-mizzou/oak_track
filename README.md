@@ -65,11 +65,33 @@ Recommended object distance **≥ 70 cm** so 800p stereo is valid (`MinZ` is ~70
 
 ## Install
 
+Run these from the **oak_track repo root** (the folder that contains `record.py` and `pyproject.toml`), not from a different OAK project directory.
+
+Prefer `python -m pip` over `pip`. If a venv was moved, recreated, or only half-installed, bash still hashes the old `pip` path and you get `bin/pip: No such file or directory`.
+
+**Repair an existing venv** (for example `venv_oak`):
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[device,dev]"
+deactivate 2>/dev/null || true
+hash -r
+source venv_oak/bin/activate          # or: source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install -U pip
+python -m pip install -r requirements.txt
 ```
+
+**Or create a fresh venv:**
+
+```bash
+deactivate 2>/dev/null || true
+hash -r
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+`record.py` / `process.py` add `src/` to `PYTHONPATH` themselves, so you do **not** need `pip install -e ".[device]"`. That editable install is optional.
 
 Runnable files at the repo root:
 
