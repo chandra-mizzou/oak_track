@@ -7,11 +7,16 @@ Record an **OAK-D Pro W** while it slides along a table, then:
 
 `h` is the table height. The camera and the object both sit on the table, so both are reported with `z = h`.
 
-Run these from the repo root:
+**Usual command** — records video, timestamps, and IMU, then writes both CSVs:
 
 ```bash
-python record.py --out runs/slide1 --table-height 0.75
-python process.py --run runs/slide1 --table-height 0.75
+python run.py --table-height 0.75 --optical-height 0.03
+```
+
+Hold still ~1 second, slide along the table width, then Ctrl+C. To stop after a fixed time instead:
+
+```bash
+python run.py --out runs/slide1 --table-height 0.75 --duration 8
 ```
 
 ---
@@ -97,25 +102,33 @@ Runnable files at the repo root:
 
 | File | What it does |
 | --- | --- |
-| `record.py` | Capture RGB + depth + IMU from the OAK-D Pro W |
-| `process.py` | Write `camera_imu.csv` and `object.csv` from a run folder |
+| `run.py` | **Record + process in one step** (video, timestamps, IMU, then CSVs) |
+| `record.py` | Capture only |
+| `process.py` | Process an existing run folder |
 | `simulate.py` | Synthetic run when no camera is plugged in |
 
 ---
 
-## Capture (Part A logging)
+## Capture + process (one command)
 
-Hold the camera **still for ~1 second**, then slide it smoothly along the table width. Do not lift it or yaw it. Stop with Ctrl+C.
-
-From the repo root:
+Hold the camera **still for ~1 second**, then slide it smoothly along the table width. Do not lift it or yaw it. Stop with Ctrl+C (or pass `--duration`).
 
 ```bash
-python record.py \
+python run.py \
   --out runs/slide1 \
   --table-height 0.75 \
   --optical-height 0.03 \
   --fps 30 \
   --mono-resolution 800p
+```
+
+That writes `color.mp4`, `frames.csv` (frame number + timestamps), `imu.csv`, then `camera_imu.csv` and `object.csv` in the same folder.
+
+To split the steps:
+
+```bash
+python record.py --out runs/slide1 --table-height 0.75 --optical-height 0.03
+python process.py --run runs/slide1 --table-height 0.75
 ```
 
 On USB2 hosts drop to `--mono-resolution 400p`.
@@ -186,8 +199,7 @@ Put an ArUco marker on the object if you need the tightest `(u, v)` and a known 
 ## Dry run without hardware
 
 ```bash
-python simulate.py --out runs/sim --table-height 0.75 --object-x 0.05 --object-y 0.90
-python process.py --run runs/sim --table-height 0.75
+python run.py --simulate --out runs/sim --table-height 0.75
 ```
 
 ---

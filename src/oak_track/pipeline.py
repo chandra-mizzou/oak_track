@@ -236,3 +236,67 @@ def process_run(
     }
     write_json(run_dir / "summary.json", summary)
     return summary
+
+
+def capture_then_process(
+    out_dir: Path,
+    table_height: float,
+    optical_height: float = 0.03,
+    fps: int = 30,
+    color_size=(1280, 720),
+    mono_resolution: str = "800p",
+    imu_rate_hz: int = 200,
+    ir_dot_projector: bool = True,
+    save_depth: bool = True,
+    duration_s: Optional[float] = None,
+    detector: str = "hsv",
+    still_time_s: float = 1.0,
+    write_preview: bool = True,
+    slide_distance: Optional[float] = None,
+    simulate: bool = False,
+    object_xy=(0.05, 0.90),
+    slide_m: float = 0.40,
+    still_s: float = 1.0,
+    slide_s: float = 2.5,
+    **det_kwargs,
+) -> dict:
+    """Record (or simulate) a slide, then write camera/object CSVs in the same folder."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if simulate:
+        from oak_track.simulate import simulate_run
+
+        simulate_run(
+            out_dir=out_dir,
+            table_height=table_height,
+            optical_height=optical_height,
+            object_xy=object_xy,
+            slide_m=slide_m,
+            still_s=still_s,
+            slide_s=slide_s,
+        )
+    else:
+        from oak_track.capture import record_oak
+
+        record_oak(
+            out_dir=out_dir,
+            table_height=table_height,
+            fps=fps,
+            color_size=color_size,
+            mono_resolution=mono_resolution,
+            imu_rate_hz=imu_rate_hz,
+            ir_dot_projector=ir_dot_projector,
+            save_depth=save_depth,
+            duration_s=duration_s,
+            camera_optical_height_m=optical_height,
+        )
+    return process_run(
+        run_dir=out_dir,
+        table_height=table_height,
+        optical_height=optical_height,
+        detector=detector,
+        still_time_s=still_time_s,
+        write_preview=write_preview,
+        slide_distance=slide_distance,
+        **det_kwargs,
+    )

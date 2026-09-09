@@ -3,17 +3,71 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 
-def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--table-height", type=float, required=True, help="Table height h in metres")
+def _add_table_args(
+    p: argparse.ArgumentParser,
+    required_height: bool,
+    optical_default: float | None = 0.03,
+) -> None:
+    kwargs: dict = {"type": float, "help": "Table height h in metres"}
+    if required_height:
+        kwargs["required"] = True
+    else:
+        kwargs["default"] = None
+    p.add_argument("--table-height", **kwargs)
     p.add_argument(
         "--optical-height",
         type=float,
-        default=0.03,
+        default=optical_default,
         help="Camera optical center above the table (m). CSV z is still h.",
     )
+
+
+def _add_record_args(p: argparse.ArgumentParser, out_required: bool) -> None:
+    p.add_argument(
+        "--out",
+        type=Path,
+        required=out_required,
+        default=None,
+        help="Run folder. If omitted on run.py, uses runs/slide_YYYYMMDD_HHMMSS",
+    )
+    p.add_argument("--fps", type=int, default=30)
+    p.add_argument("--width", type=int, default=1280)
+    p.add_argument("--height", type=int, default=720)
+    p.add_argument("--mono-resolution", default="800p", choices=["400p", "800p"])
+    p.add_argument("--imu-rate", type=int, default=200)
+    p.add_argument("--no-ir", action="store_true")
+    p.add_argument("--no-depth", action="store_true")
+    p.add_argument("--duration", type=float, default=None, help="Seconds; default is until Ctrl+C")
+
+
+def _add_process_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--detector", choices=["hsv", "depth_blob", "aruco"], default="hsv")
+    p.add_argument("--still-time", type=float, default=1.0)
+    p.add_argument("--aruco-id", type=int, default=0)
+    p.add_argument(
+        "--slide-distance",
+        type=float,
+        default=None,
+        help="Optional measured slide distance (m) to scale IMU translation",
+    )
+    p.add_argument("--no-preview", action="store_true")
+
+
+def _default_out_dir() -> Path:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Path("runs") / f"slide_{stamp}"
+
+
+def _print_summary(summary: dict) -> None:
+    print("Part A camera IMU CSV:", summary["camera_imu_csv"])
+    print("Part B object CSV:    ", summary["object_csv"])
+    print("Fused object (x,y,z): ", tuple(summary["object_fused_xyz"]))
+    print("Detections used:      ", summary["n_object_detections"])
+    print("RMS reprojection px:  ", summary["object_rms_reproj_px"])
 
 
 def main(argv=None) -> int:
@@ -23,35 +77,30 @@ def main(argv=None) -> int:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    rec = sub.add_parser("record", help="Record color, depth, and IMU from a live OAK-D Pro W")
-    _add_common(rec)
-    rec.add_argument("--out", type=Path, required=True)
-    rec.add_argument("--fps", type=int, default=30)
-    rec.add_argument("--width", type=int, default=1280)
-    rec.add_argument("--height", type=int, default=720)
-    rec.add_argument("--mono-resolution", default="800p", choices=["400p", "800p"])
-    rec.add_argument("--imu-rate", type=int, default=200)
-    rec.add_argument("--no-ir", action="store_true")
-    rec.add_argument("--no-depth", action="store_true")
-    rec.add_argument("--duration", type=float, default=None, help="Seconds; default is until Ctrl+C")
+    rec = sub.add_parser("record", help="Record color, depth, IMU, and timestamps")
+    _add_table_args(rec, required_height=True)
+    _add_record_args(rec, out_required=True)
 
     proc = sub.add_parser("process", help="Build camera_imu.csv and object.csv from a run folder")
     proc.add_argument("--run", type=Path, required=True)
-    proc.add_argument("--table-height", type=float, default=None)
-    proc.add_argument("--optical-height", type=float, default=None)
-    proc.add_argument("--detector", choices=["hsv", "depth_blob", "aruco"], default="hsv")
-    proc.add_argument("--still-time", type=float, default=1.0)
-    proc.add_argument("--aruco-id", type=int, default=0)
-    proc.add_argument(
-        "--slide-distance",
-        type=float,
-        default=None,
-        help="Optional measured slide distance (m) to scale IMU translation",
+    _add_table_args(proc, required_height=False, optical_default=None)
+    _add_process_args(proc)
+
+    run = sub.add_parser(
+        "run",
+        help="Record a slide (video + timestamps + IMU) then process it in one step",
     )
-    proc.add_argument("--no-preview", action="store_true")
+    _add_table_args(run, required_height=True)
+    _add_record_args(run, out_required=False)
+    _add_process_args(run)
+    run.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Use a synthetic slide instead of the live camera",
+    )
 
     sim = sub.add_parser("simulate", help="Write a synthetic run folder (no hardware)")
-    _add_common(sim)
+    _add_table_args(sim, required_height=True)
     sim.add_argument("--out", type=Path, required=True)
     sim.add_argument("--object-x", type=float, default=0.05)
     sim.add_argument("--object-y", type=float, default=0.90)
@@ -76,6 +125,8 @@ def main(argv=None) -> int:
             duration_s=args.duration,
             camera_optical_height_m=args.optical_height,
         )
+        print(f"Timestamps: {args.out / 'frames.csv'}")
+        print(f"IMU log:    {args.out / 'imu.csv'}")
         return 0
 
     if args.cmd == "simulate":
@@ -106,11 +157,38 @@ def main(argv=None) -> int:
             aruco_id=args.aruco_id,
             slide_distance=args.slide_distance,
         )
-        print("Part A camera IMU CSV:", summary["camera_imu_csv"])
-        print("Part B object CSV:    ", summary["object_csv"])
-        print("Fused object (x,y,z): ", tuple(summary["object_fused_xyz"]))
-        print("Detections used:      ", summary["n_object_detections"])
-        print("RMS reprojection px:  ", summary["object_rms_reproj_px"])
+        _print_summary(summary)
+        return 0
+
+    if args.cmd == "run":
+        from oak_track.pipeline import capture_then_process
+
+        out_dir = args.out or _default_out_dir()
+        print(f"Run folder: {out_dir}")
+        if not args.simulate:
+            print("Hold still ~1s, slide along the table width, then Ctrl+C (or wait for --duration).")
+        summary = capture_then_process(
+            out_dir=out_dir,
+            table_height=args.table_height,
+            optical_height=args.optical_height,
+            fps=args.fps,
+            color_size=(args.width, args.height),
+            mono_resolution=args.mono_resolution,
+            imu_rate_hz=args.imu_rate,
+            ir_dot_projector=not args.no_ir,
+            save_depth=not args.no_depth,
+            duration_s=args.duration,
+            detector=args.detector,
+            still_time_s=args.still_time,
+            write_preview=not args.no_preview,
+            slide_distance=args.slide_distance,
+            simulate=args.simulate,
+            aruco_id=args.aruco_id,
+        )
+        print(f"Timestamps: {out_dir / 'frames.csv'}")
+        print(f"IMU log:    {out_dir / 'imu.csv'}")
+        print(f"Video:      {out_dir / 'color.mp4'}")
+        _print_summary(summary)
         return 0
 
     return 1
