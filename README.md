@@ -7,6 +7,13 @@ Record an **OAK-D Pro W** while it slides along a table, then:
 
 `h` is the table height. The camera and the object both sit on the table, so both are reported with `z = h`.
 
+Run these from the repo root:
+
+```bash
+python record.py --out runs/slide1 --table-height 0.75
+python process.py --run runs/slide1 --table-height 0.75
+```
+
 ---
 
 ## Why IMU-only position is not enough
@@ -64,14 +71,24 @@ source .venv/bin/activate
 pip install -e ".[device,dev]"
 ```
 
+Runnable files at the repo root:
+
+| File | What it does |
+| --- | --- |
+| `record.py` | Capture RGB + depth + IMU from the OAK-D Pro W |
+| `process.py` | Write `camera_imu.csv` and `object.csv` from a run folder |
+| `simulate.py` | Synthetic run when no camera is plugged in |
+
 ---
 
 ## Capture (Part A logging)
 
 Hold the camera **still for ~1 second**, then slide it smoothly along the table width. Do not lift it or yaw it. Stop with Ctrl+C.
 
+From the repo root:
+
 ```bash
-oak-track record \
+python record.py \
   --out runs/slide1 \
   --table-height 0.75 \
   --optical-height 0.03 \
@@ -96,7 +113,7 @@ What is stored:
 ## Process
 
 ```bash
-oak-track process \
+python process.py \
   --run runs/slide1 \
   --table-height 0.75 \
   --optical-height 0.03 \
@@ -147,8 +164,8 @@ Put an ArUco marker on the object if you need the tightest `(u, v)` and a known 
 ## Dry run without hardware
 
 ```bash
-oak-track simulate --out runs/sim --table-height 0.75 --object-x 0.05 --object-y 0.90
-oak-track process --run runs/sim --table-height 0.75
+python simulate.py --out runs/sim --table-height 0.75 --object-x 0.05 --object-y 0.90
+python process.py --run runs/sim --table-height 0.75
 ```
 
 ---
