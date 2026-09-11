@@ -135,6 +135,15 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 
 Then unplug the camera, plug it back in, wait a few seconds, and rerun. Do not use `sudo python`.
 
+If you instead see `X_LINK_DEVICE_ALREADY_IN_USE`, another program still owns the camera:
+
+```bash
+pgrep -af 'python|depthai'
+pkill -f 'run.py|record.py|depthai'
+```
+
+Unplug, wait 3 seconds, plug back in, then rerun `python run.py ...`.
+
 To split the steps:
 
 ```bash

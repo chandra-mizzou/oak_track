@@ -76,7 +76,7 @@ def _mono_res(dai, name: str):
     return dai.MonoCameraProperties.SensorResolution.THE_400_P
 
 
-def build_pipeline(dai, imu_name: str, fps: int, color_size, mono_resolution: str, imu_rate_hz: int, save_depth: bool):
+def build_pipeline(dai, fps: int, color_size, mono_resolution: str, imu_rate_hz: int, save_depth: bool):
     pipeline = dai.Pipeline()
     cam = pipeline.create(dai.node.ColorCamera)
     cam.setBoardSocket(dai.CameraBoardSocket.CAM_A)
@@ -92,7 +92,8 @@ def build_pipeline(dai, imu_name: str, fps: int, color_size, mono_resolution: st
     cam.preview.link(xout_color.input)
 
     imu = pipeline.create(dai.node.IMU)
-    _enable_imu(imu, dai, imu_name, imu_rate_hz)
+    # RAW accel/gyro works on both BMI270 and BNO085; host fusion is in imu.py.
+    _enable_imu(imu, dai, "BMI270", imu_rate_hz)
     xout_imu = pipeline.create(dai.node.XLinkOut)
     xout_imu.setStreamName("imu")
     imu.out.link(xout_imu.input)
@@ -197,6 +198,19 @@ Unplug the OAK-D, plug it back into a USB3 port, wait a few seconds, then rerun.
 Do not use sudo python; the udev rule is what grants your user access.
 """.strip()
 
+BUSY_HELP = """
+The OAK-D is already used by another process (X_LINK_DEVICE_ALREADY_IN_USE).
+
+Find and stop it (a leftover run.py, depthai demo, ROS node, or hung Python):
+
+  pgrep -af 'python|depthai'
+  pkill -f 'run.py|record.py|depthai'
+
+Then unplug the camera, wait 3 seconds, plug it back into USB3, and rerun.
+Before starting, `lsusb | grep 03e7` should show 03e7:2485 (unbooted).
+While recording it typically becomes 03e7:f63b.
+""".strip()
+
 
 def _list_oak_devices(dai) -> list:
     try:
@@ -212,20 +226,30 @@ def _device_label(info) -> str:
     return f"{name}  mxid={mx}  {proto}"
 
 
-def _open_usb_oak(dai):
+def _select_oak_info(dai):
     found = _list_oak_devices(dai)
     if not found:
-        raise SystemExit(
-            "No usable OAK camera on USB.\n\n" + UDEV_HELP
-        )
+        raise SystemExit("No usable OAK camera on USB.\n\n" + UDEV_HELP + "\n\n" + BUSY_HELP)
     info = found[0]
     print(f"Detected {len(found)} OAK device(s). Using: {_device_label(info)}")
     for extra in found[1:]:
         print(f"  (not used) {_device_label(extra)}")
+    return info
+
+
+def _connect_device(dai, pipeline, info):
     try:
-        return dai.Device(info)
+        try:
+            return dai.Device(pipeline, info)
+        except TypeError:
+            return dai.Device(pipeline)
     except RuntimeError as exc:
-        raise SystemExit(f"{exc}\n\n{UDEV_HELP}") from exc
+        text = str(exc)
+        if "ALREADY_IN_USE" in text or "another process" in text.lower():
+            raise SystemExit(f"{exc}\n\n{BUSY_HELP}") from exc
+        if "UNBOOTED" in text or "permission" in text.lower() or "No available" in text:
+            raise SystemExit(f"{exc}\n\n{UDEV_HELP}") from exc
+        raise SystemExit(f"{exc}\n\n{BUSY_HELP}\n\n{UDEV_HELP}") from exc
 
 
 def record_oak(
@@ -255,12 +279,12 @@ def record_oak(
     paths = run_paths(out_dir)
     paths["depth_dir"].mkdir(parents=True, exist_ok=True)
 
-    with _open_usb_oak(dai) as device:
+    info = _select_oak_info(dai)
+    pipeline = build_pipeline(
+        dai, fps, color_size, mono_resolution, imu_rate_hz, save_depth
+    )
+    with _connect_device(dai, pipeline, info) as device:
         imu_name = _get_imu_name(device)
-        pipeline = build_pipeline(
-            dai, imu_name, fps, color_size, mono_resolution, imu_rate_hz, save_depth
-        )
-        device.startPipeline(pipeline)
         _set_ir(device, ir_dot_projector)
 
         q_color = device.getOutputQueue("color", maxSize=8, blocking=False)
