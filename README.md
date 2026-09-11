@@ -124,7 +124,16 @@ python run.py \
 
 That writes `color.mp4`, `frames.csv` (frame number + timestamps), `imu.csv`, then `camera_imu.csv` and `object.csv` in the same folder.
 
-The camera is detected automatically: plug the OAK-D into USB, then run `run.py` / `record.py`. DepthAI opens the first OAK it sees. You do not pass a port or device ID. If several OAKs are plugged in, the first one in the USB list is used. If none are found, the script exits with an error instead of hanging.
+The camera is detected automatically: plug the OAK-D into USB, then run `run.py` / `record.py`. DepthAI opens the first OAK it sees. You do not pass a port or device ID. If several OAKs are plugged in, the first one in the USB list is used.
+
+**Linux USB permissions:** if you see `X_LINK_UNBOOTED` / `Insufficient permissions` / `No available devices`, install udev rules once:
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Then unplug the camera, plug it back in, wait a few seconds, and rerun. Do not use `sudo python`.
 
 To split the steps:
 

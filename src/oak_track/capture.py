@@ -186,6 +186,18 @@ def _packet_quat(report) -> Optional[np.ndarray]:
         return None
 
 
+UDEV_HELP = """
+Linux cannot talk to the OAK-D (X_LINK_UNBOOTED / insufficient USB permissions).
+Install DepthAI udev rules once, then unplug and replug the camera:
+
+  echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+
+Unplug the OAK-D, plug it back into a USB3 port, wait a few seconds, then rerun.
+Do not use sudo python; the udev rule is what grants your user access.
+""".strip()
+
+
 def _list_oak_devices(dai) -> list:
     try:
         return list(dai.Device.getAllAvailableDevices())
@@ -204,15 +216,19 @@ def _open_usb_oak(dai):
     found = _list_oak_devices(dai)
     if not found:
         raise SystemExit(
-            "No OAK camera found on USB.\n"
-            "Plug the OAK-D Pro W into a USB3 port, wait a few seconds until it enumerates, then retry.\n"
-            "On Linux you may also need the DepthAI udev rules and to be in the plugdev group."
+            "No usable OAK camera on USB.\n\n" + UDEV_HELP
         )
     info = found[0]
     print(f"Detected {len(found)} OAK device(s). Using: {_device_label(info)}")
     for extra in found[1:]:
         print(f"  (not used) {_device_label(extra)}")
-    return dai.Device(info)
+    try:
+        return dai.Device(info)
+    except RuntimeError as exc:
+        raise SystemExit(f"{exc}\n\n{UDEV_HELP}") from exc
+
+
+def record_oak(
     out_dir: Path,
     table_height: float,
     fps: int = 30,
