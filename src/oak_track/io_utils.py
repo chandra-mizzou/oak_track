@@ -174,4 +174,7 @@ def run_paths(run_dir: Path) -> dict[str, Path]:
         "detections": run_dir / "detections.csv",
         "preview": run_dir / "preview.mp4",
         "ground_truth": run_dir / "ground_truth.json",
+        "cloud": run_dir / "cloud.ply",
+        "cloud_meta": run_dir / "cloud.json",
+        "cloud_preview": run_dir / "cloud_preview.png",
     }

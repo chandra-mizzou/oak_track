@@ -17,6 +17,10 @@ dependencies = [
 [project.optional-dependencies]
 device = ["depthai>=2.24.0"]
 dev = ["pytest>=7.4"]
+# Not required to write cloud.ply (numpy+opencv already do that).
+# Install only if you want an interactive 3D viewer:
+#   python -m pip install "oak-track[cloud]"
+cloud = ["open3d>=0.17"]
 
 [project.scripts]
 oak-track = "oak_track.cli:main"

@@ -20,6 +20,7 @@ from oak_track.io_utils import (
     write_frame_xyz_csv,
     write_json,
 )
+from oak_track.cloud import write_run_cloud
 from oak_track.localize import fuse_object
 from oak_track.vision import ObjectTracker, stereo_visual_odometry
 
@@ -88,6 +89,12 @@ def process_run(
     still_time_s: float = 1.0,
     write_preview: bool = True,
     slide_distance: Optional[float] = None,
+    write_cloud: bool = True,
+    cloud_pixel_stride: int = 2,
+    cloud_frame_stride: int = 1,
+    cloud_voxel: float = 0.01,
+    cloud_depth_min: float = 0.3,
+    cloud_depth_max: float = 3.0,
     **det_kwargs,
 ) -> dict:
     run_dir = Path(run_dir)
@@ -225,6 +232,21 @@ def process_run(
             wr.write(vis)
         wr.release()
 
+    cloud_meta = None
+    if write_cloud:
+        cloud_meta = write_run_cloud(
+            run_dir,
+            color,
+            depths,
+            used_poses,
+            K,
+            pixel_stride=cloud_pixel_stride,
+            frame_stride=cloud_frame_stride,
+            voxel_m=cloud_voxel,
+            depth_min_m=cloud_depth_min,
+            depth_max_m=cloud_depth_max,
+        )
+
     summary = {
         "camera_imu_csv": str(paths["camera_imu"]),
         "object_csv": str(paths["object"]),
@@ -233,6 +255,8 @@ def process_run(
         "n_object_detections": int(est.n_used),
         "table_height_m": h,
         "first_frame_origin": [0.0, 0.0, h],
+        "cloud_ply": None if cloud_meta is None else cloud_meta.get("cloud_ply"),
+        "cloud_n_points": None if cloud_meta is None else cloud_meta.get("n_points"),
     }
     write_json(run_dir / "summary.json", summary)
     return summary
@@ -260,6 +284,12 @@ def capture_then_process(
     slide_s: float = 2.5,
     orientation: str = "auto",
     undistort_alpha: float = 0.0,
+    write_cloud: bool = True,
+    cloud_pixel_stride: int = 2,
+    cloud_frame_stride: int = 1,
+    cloud_voxel: float = 0.01,
+    cloud_depth_min: float = 0.3,
+    cloud_depth_max: float = 3.0,
     **det_kwargs,
 ) -> dict:
     """Record (or simulate) a slide, then write camera/object CSVs in the same folder."""
@@ -302,5 +332,11 @@ def capture_then_process(
         still_time_s=still_time_s,
         write_preview=write_preview,
         slide_distance=slide_distance,
+        write_cloud=write_cloud,
+        cloud_pixel_stride=cloud_pixel_stride,
+        cloud_frame_stride=cloud_frame_stride,
+        cloud_voxel=cloud_voxel,
+        cloud_depth_min=cloud_depth_min,
+        cloud_depth_max=cloud_depth_max,
         **det_kwargs,
     )

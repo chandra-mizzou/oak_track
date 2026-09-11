@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build camera_imu.csv (Part A) and object.csv (Part B) from a recorded run.
+"""Build camera/object CSVs and a dense cloud.ply from a recorded run.
 
 Example:
     python process.py --run runs/slide1 --table-height 0.75 --detector hsv

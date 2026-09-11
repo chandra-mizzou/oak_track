@@ -2,7 +2,7 @@
 """Record a table slide and process it in one step.
 
 Logs video, per-frame timestamps, and IMU while you slide the camera, then
-writes camera_imu.csv and object.csv in the same folder.
+writes camera_imu.csv, object.csv, and cloud.ply in the same folder.
 
 Example:
     python run.py --table-height 0.75 --optical-height 0.03

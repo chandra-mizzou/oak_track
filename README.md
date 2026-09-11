@@ -98,11 +98,35 @@ python -m pip install -r requirements.txt
 
 `record.py` / `process.py` add `src/` to `PYTHONPATH` themselves, so you do **not** need `pip install -e ".[device]"`. That editable install is optional.
 
+**Update an existing clone** (after a `git pull` of this branch):
+
+```bash
+cd ~/Documents/VIO/oak_track
+git pull
+source ~/Documents/VIO/OAK/venv_oak/bin/activate   # or your venv
+python -m pip install -r requirements.txt
+```
+
+`requirements.txt` is unchanged for the dense cloud: it is built with **numpy + opencv-python + scipy**, which you already install. No extra library is required to write `cloud.ply`.
+
+Optional, only if you want an interactive 3D viewer:
+
+```bash
+python -m pip install open3d
+python -c "import open3d as o3d; p=o3d.io.read_point_cloud('runs/slide1/cloud.ply'); o3d.visualization.draw_geometries([p])"
+```
+
+To rebuild the cloud from a recording you already have:
+
+```bash
+python process.py --run runs/slide1 --table-height 0.77
+```
+
 Runnable files at the repo root:
 
 | File | What it does |
 | --- | --- |
-| `run.py` | **Record + process in one step** (video, timestamps, IMU, then CSVs) |
+| `run.py` | **Record + process in one step** (video, timestamps, IMU, CSVs, dense cloud) |
 | `record.py` | Capture only |
 | `process.py` | Process an existing run folder |
 | `simulate.py` | Synthetic run when no camera is plugged in |
@@ -122,7 +146,7 @@ python run.py \
   --mono-resolution 800p
 ```
 
-That writes `color.mp4`, `frames.csv` (frame number + timestamps), `imu.csv`, then `camera_imu.csv` and `object.csv` in the same folder.
+That writes `color.mp4`, `frames.csv` (frame number + timestamps), `imu.csv`, then `camera_imu.csv`, `object.csv`, and a dense `cloud.ply` in the same folder.
 
 The camera is detected automatically: plug the OAK-D into USB, then run `run.py` / `record.py`. DepthAI opens the first OAK it sees. You do not pass a port or device ID. If several OAKs are plugged in, the first one in the USB list is used.
 
@@ -162,6 +186,9 @@ What is stored:
 | `imu.csv` | Device timestamps, accel, gyro, optional quaternion / linear accel |
 | `frames.csv` | Frame index ↔ color/depth timestamps |
 | `calibration.json` | Intrinsics, distortion, IMU–camera extrinsics from the EEPROM |
+| `cloud.ply` | Dense RGB-D point cloud in the world frame (written during process) |
+| `cloud.json` | Point count, voxel size, frames used |
+| `cloud_preview.png` | Top-down XY colour preview of the cloud |
 
 ---
 
@@ -178,6 +205,14 @@ python process.py \
 
 Use `--detector aruco` if you put a marker on the object.
 
+Dense cloud flags (defaults write `cloud.ply` in the run folder):
+
+```bash
+python process.py --run runs/slide1 --table-height 0.77
+python process.py --run runs/slide1 --cloud-stride 1 --cloud-voxel 0.005   # denser
+python process.py --run runs/slide1 --no-cloud                             # skip
+```
+
 Outputs (two columns, metres):
 
 ```text
@@ -193,7 +228,11 @@ frame_number,xyz
 | `object.csv` | **Part B** — per-frame object `(x, y, h)` |
 | `object_fused.csv` | Single static object position (best overall estimate) |
 | `preview.mp4` | Detections overlaid |
-| `summary.json` | Fused object, detection count, RMS reprojection |
+| `cloud.ply` | Dense coloured point cloud from stored RGB-D + IMU/VO camera poses |
+| `cloud_preview.png` | Top-down (X–Y) preview of that cloud |
+| `summary.json` | Fused object, detection count, RMS reprojection, cloud path |
+
+The cloud is a fusion of stored `color.mp4` / `depth/*.png` with the same IMU/VO camera poses used for object tracking. Default settings back-project every 2nd pixel, keep depth between 0.3–3 m, and voxel-downsample at 1 cm. Open it in MeshLab or CloudCompare; `open3d` is optional (see Install).
 
 ---
 

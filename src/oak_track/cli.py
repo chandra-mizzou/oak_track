@@ -67,6 +67,29 @@ def _add_process_args(p: argparse.ArgumentParser) -> None:
         help="Optional measured slide distance (m) to scale IMU translation",
     )
     p.add_argument("--no-preview", action="store_true")
+    p.add_argument(
+        "--no-cloud",
+        action="store_true",
+        help="Skip writing cloud.ply from stored RGB-D + IMU/VO poses",
+    )
+    p.add_argument(
+        "--cloud-stride",
+        type=int,
+        default=2,
+        help="Pixel stride when back-projecting depth (1=every pixel, denser, slower)",
+    )
+    p.add_argument(
+        "--cloud-frame-stride",
+        type=int,
+        default=1,
+        help="Use every Nth stored frame for the dense cloud",
+    )
+    p.add_argument(
+        "--cloud-voxel",
+        type=float,
+        default=0.01,
+        help="Voxel size in metres for the fused cloud (0 keeps every point)",
+    )
 
 
 def _default_out_dir() -> Path:
@@ -80,6 +103,20 @@ def _print_summary(summary: dict) -> None:
     print("Fused object (x,y,z): ", tuple(summary["object_fused_xyz"]))
     print("Detections used:      ", summary["n_object_detections"])
     print("RMS reprojection px:  ", summary["object_rms_reproj_px"])
+    if summary.get("cloud_ply"):
+        print("Dense cloud PLY:      ", summary["cloud_ply"])
+        print("Cloud points:         ", summary.get("cloud_n_points"))
+    else:
+        print("Dense cloud PLY:       (not written — no depth or --no-cloud)")
+
+
+def _cloud_kwargs(args) -> dict:
+    return {
+        "write_cloud": not args.no_cloud,
+        "cloud_pixel_stride": args.cloud_stride,
+        "cloud_frame_stride": args.cloud_frame_stride,
+        "cloud_voxel": args.cloud_voxel,
+    }
 
 
 def main(argv=None) -> int:
@@ -170,6 +207,7 @@ def main(argv=None) -> int:
             write_preview=not args.no_preview,
             aruco_id=args.aruco_id,
             slide_distance=args.slide_distance,
+            **_cloud_kwargs(args),
         )
         _print_summary(summary)
         return 0
@@ -200,6 +238,7 @@ def main(argv=None) -> int:
             aruco_id=args.aruco_id,
             orientation=args.orientation,
             undistort_alpha=args.undistort_alpha,
+            **_cloud_kwargs(args),
         )
         print(f"Timestamps: {out_dir / 'frames.csv'}")
         print(f"IMU log:    {out_dir / 'imu.csv'}")

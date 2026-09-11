@@ -34,6 +34,8 @@ def test_process_help():
     assert r.returncode == 0
     assert "--run" in r.stdout
     assert "--detector" in r.stdout
+    assert "--no-cloud" in r.stdout
+    assert "--cloud-stride" in r.stdout
 
 
 def test_run_help():

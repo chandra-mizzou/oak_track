@@ -43,6 +43,8 @@ def test_simulate_and_process(tmp_path: Path):
     assert text == "frame_number,xyz"
     _, obj_csv = read_frame_xyz_csv(paths["object"])
     np.testing.assert_allclose(obj_csv[:, 2], h)
+    assert paths["cloud"].is_file()
+    assert summary["cloud_n_points"] > 50
     gt = read_json(paths["ground_truth"])
     assert gt["object_xyz"][1] == pytest.approx(obj[1])
 
@@ -65,6 +67,7 @@ def test_capture_then_process_simulate(tmp_path: Path):
     assert (out / "frames.csv").is_file()
     assert (out / "camera_imu.csv").is_file()
     assert (out / "object.csv").is_file()
+    assert (out / "cloud.ply").is_file()
     fused = np.array(summary["object_fused_xyz"])
     assert fused[2] == pytest.approx(h)
     assert summary["n_object_detections"] >= 8

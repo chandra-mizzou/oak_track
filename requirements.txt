@@ -3,3 +3,6 @@ opencv-python>=4.8
 scipy>=1.10
 pytest>=7.4
 depthai>=2.24.0
+# Dense cloud.ply is generated with numpy + opencv above — no extra package required.
+# Optional interactive viewer for cloud.ply:
+# open3d>=0.17
