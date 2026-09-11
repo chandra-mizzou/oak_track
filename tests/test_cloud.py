@@ -83,7 +83,7 @@ def test_simulate_process_writes_cloud(tmp_path: Path):
     assert (run / "cloud.json").is_file()
     assert (run / "cloud_preview.png").is_file()
     xyz, rgb = read_ply_xyzrgb(ply)
-    assert len(xyz) > 50
+    assert len(xyz) > 400
     assert summary["cloud_n_points"] == len(xyz)
     # Simulated depth is on the table plane; fused Z should cluster near h.
     assert abs(float(np.median(xyz[:, 2])) - h) < 0.08

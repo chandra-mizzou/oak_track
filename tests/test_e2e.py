@@ -44,7 +44,7 @@ def test_simulate_and_process(tmp_path: Path):
     _, obj_csv = read_frame_xyz_csv(paths["object"])
     np.testing.assert_allclose(obj_csv[:, 2], h)
     assert paths["cloud"].is_file()
-    assert summary["cloud_n_points"] > 50
+    assert summary["cloud_n_points"] > 400
     gt = read_json(paths["ground_truth"])
     assert gt["object_xyz"][1] == pytest.approx(obj[1])
 

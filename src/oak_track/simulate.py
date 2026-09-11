@@ -43,6 +43,32 @@ def camera_motion(t: np.ndarray, still: float, slide: float, distance: float) ->
     return x, ax
 
 
+def table_depth_mm(K: np.ndarray, pose: Pose, width: int, height: int, table_height: float) -> np.ndarray:
+    """Dense 16-bit millimetre depth of the table plane z = h, from one camera pose."""
+    fx, fy = float(K[0, 0]), float(K[1, 1])
+    cx, cy = float(K[0, 2]), float(K[1, 2])
+    us = np.arange(width, dtype=np.float64)
+    vs = np.arange(height, dtype=np.float64)
+    uu, vv = np.meshgrid(us, vs)
+    dirs = np.stack([(uu - cx) / fx, (vv - cy) / fy, np.ones_like(uu)], axis=-1)
+    dirs_w = dirs @ pose.R.T
+    denom = dirs_w[:, :, 2]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z_cam = (table_height - float(pose.t[2])) / denom
+    p_w = dirs_w * z_cam[..., None] + pose.t.reshape(1, 1, 3)
+    valid = (
+        np.isfinite(z_cam)
+        & (z_cam > 0.08)
+        & (z_cam < 8.0)
+        & (p_w[:, :, 1] > 0.05)
+        & (np.abs(p_w[:, :, 0]) < 4.0)
+    )
+    out = np.zeros((height, width), dtype=np.uint16)
+    mm = np.clip(np.round(z_cam * 1000.0), 1, 65535)
+    out[valid] = mm[valid].astype(np.uint16)
+    return out
+
+
 def simulate_run(
     out_dir: Path,
     table_height: float = 0.75,
@@ -101,7 +127,7 @@ def simulate_run(
         img[:, :, 0] = np.clip(36 + (xx * 3 + yy) % 17, 0, 255)
         img[:, :, 1] = np.clip(48 + (yy * 2) % 21, 0, 255)
         img[:, :, 2] = np.clip(70 + (xx + 2 * yy) % 25, 0, 255)
-        depth = np.zeros((height, width), dtype=np.uint16)
+        depth = table_depth_mm(K, pose, width, height, table_height)
         for gx in np.linspace(-0.15, 0.55, 12):
             for gy in np.linspace(0.35, 1.15, 10):
                 pw = np.array([gx, gy, table_height])

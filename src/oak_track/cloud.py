@@ -206,7 +206,13 @@ def read_ply_xyzrgb(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return xyz, rgb
 
 
-def write_cloud_preview_xy(path: Path, xyz: np.ndarray, rgb: np.ndarray, width: int = 960) -> None:
+def write_cloud_preview_xy(
+    path: Path,
+    xyz: np.ndarray,
+    rgb: np.ndarray,
+    width: int = 960,
+    voxel_m: float = 0.01,
+) -> None:
     """Top-down XY scatter (table plane) as a PNG, no extra libraries."""
     path = Path(path)
     if len(xyz) == 0:
@@ -221,7 +227,18 @@ def write_cloud_preview_xy(path: Path, xyz: np.ndarray, rgb: np.ndarray, width: 
     img = np.zeros((height, width, 3), dtype=np.uint8)
     px = np.clip(((x - xmin) / span_x * (width - 1)).astype(np.int32), 0, width - 1)
     py = np.clip(((ymax - y) / span_y * (height - 1)).astype(np.int32), 0, height - 1)
-    img[py, px] = rgb[:, ::-1]
+    bgr = rgb[:, ::-1]
+    rad = 1
+    if voxel_m > 0:
+        rad = max(1, int(round(0.6 * width * float(voxel_m) / span_x)))
+        rad = min(rad, 12)
+    for dr in range(-rad, rad + 1):
+        for dc in range(-rad, rad + 1):
+            if dr * dr + dc * dc > rad * rad:
+                continue
+            yy = np.clip(py + dr, 0, height - 1)
+            xx = np.clip(px + dc, 0, width - 1)
+            img[yy, xx] = bgr
     cv2.imwrite(str(path), img)
 
 
@@ -303,7 +320,7 @@ def write_run_cloud(
     run_dir = Path(run_dir)
     ply = run_dir / "cloud.ply"
     write_ply_xyzrgb(ply, xyz, rgb)
-    write_cloud_preview_xy(run_dir / "cloud_preview.png", xyz, rgb)
+    write_cloud_preview_xy(run_dir / "cloud_preview.png", xyz, rgb, voxel_m=voxel_m)
     meta["cloud_ply"] = str(ply)
     meta["cloud_preview"] = str(run_dir / "cloud_preview.png")
     write_json(run_dir / "cloud.json", meta)
