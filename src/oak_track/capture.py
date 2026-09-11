@@ -186,7 +186,33 @@ def _packet_quat(report) -> Optional[np.ndarray]:
         return None
 
 
-def record_oak(
+def _list_oak_devices(dai) -> list:
+    try:
+        return list(dai.Device.getAllAvailableDevices())
+    except Exception:
+        return []
+
+
+def _device_label(info) -> str:
+    mx = getattr(info, "mxid", None) or getattr(info, "getMxId", lambda: "?")()
+    proto = str(getattr(info, "protocol", "USB"))
+    name = getattr(info, "name", None) or "OAK"
+    return f"{name}  mxid={mx}  {proto}"
+
+
+def _open_usb_oak(dai):
+    found = _list_oak_devices(dai)
+    if not found:
+        raise SystemExit(
+            "No OAK camera found on USB.\n"
+            "Plug the OAK-D Pro W into a USB3 port, wait a few seconds until it enumerates, then retry.\n"
+            "On Linux you may also need the DepthAI udev rules and to be in the plugdev group."
+        )
+    info = found[0]
+    print(f"Detected {len(found)} OAK device(s). Using: {_device_label(info)}")
+    for extra in found[1:]:
+        print(f"  (not used) {_device_label(extra)}")
+    return dai.Device(info)
     out_dir: Path,
     table_height: float,
     fps: int = 30,
@@ -213,7 +239,7 @@ def record_oak(
     paths = run_paths(out_dir)
     paths["depth_dir"].mkdir(parents=True, exist_ok=True)
 
-    with dai.Device() as device:
+    with _open_usb_oak(dai) as device:
         imu_name = _get_imu_name(device)
         pipeline = build_pipeline(
             dai, imu_name, fps, color_size, mono_resolution, imu_rate_hz, save_depth

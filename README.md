@@ -124,6 +124,8 @@ python run.py \
 
 That writes `color.mp4`, `frames.csv` (frame number + timestamps), `imu.csv`, then `camera_imu.csv` and `object.csv` in the same folder.
 
+The camera is detected automatically: plug the OAK-D into USB, then run `run.py` / `record.py`. DepthAI opens the first OAK it sees. You do not pass a port or device ID. If several OAKs are plugged in, the first one in the USB list is used. If none are found, the script exits with an error instead of hanging.
+
 To split the steps:
 
 ```bash
