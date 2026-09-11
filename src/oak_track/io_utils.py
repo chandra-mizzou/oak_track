@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
@@ -124,6 +124,10 @@ class Calibration:
     baseline_m: float = 0.075
     imu_to_cam: list[list[float]] | None = None
     K_left: list[list[float]] | None = None
+    inverted: bool = False
+    undistorted: bool = False
+    K_raw: list[list[float]] | None = None
+    dist_raw: list[float] | None = None
 
     def K_np(self) -> np.ndarray:
         return np.asarray(self.K, dtype=np.float64)
@@ -148,7 +152,8 @@ def save_calibration(path: Path, calib: Calibration) -> None:
 
 def load_calibration(path: Path) -> Calibration:
     d = read_json(path)
-    return Calibration(**d)
+    allowed = {f.name for f in fields(Calibration)}
+    return Calibration(**{k: v for k, v in d.items() if k in allowed})
 
 
 def run_paths(run_dir: Path) -> dict[str, Path]:

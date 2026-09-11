@@ -42,6 +42,18 @@ def _add_record_args(p: argparse.ArgumentParser, out_required: bool) -> None:
     p.add_argument("--no-ir", action="store_true")
     p.add_argument("--no-depth", action="store_true")
     p.add_argument("--duration", type=float, default=None, help="Seconds; default is until Ctrl+C")
+    p.add_argument(
+        "--orientation",
+        choices=["auto", "inverted", "upright"],
+        default="auto",
+        help="auto: detect Y-up (inverted) from gravity; inverted: always rotate 180°",
+    )
+    p.add_argument(
+        "--undistort-alpha",
+        type=float,
+        default=0.0,
+        help="OpenCV undistort alpha (0=crop valid pixels, 1=keep full FOV)",
+    )
 
 
 def _add_process_args(p: argparse.ArgumentParser) -> None:
@@ -124,6 +136,8 @@ def main(argv=None) -> int:
             save_depth=not args.no_depth,
             duration_s=args.duration,
             camera_optical_height_m=args.optical_height,
+            orientation=args.orientation,
+            undistort_alpha=args.undistort_alpha,
         )
         print(f"Timestamps: {args.out / 'frames.csv'}")
         print(f"IMU log:    {args.out / 'imu.csv'}")
@@ -184,6 +198,8 @@ def main(argv=None) -> int:
             slide_distance=args.slide_distance,
             simulate=args.simulate,
             aruco_id=args.aruco_id,
+            orientation=args.orientation,
+            undistort_alpha=args.undistort_alpha,
         )
         print(f"Timestamps: {out_dir / 'frames.csv'}")
         print(f"IMU log:    {out_dir / 'imu.csv'}")

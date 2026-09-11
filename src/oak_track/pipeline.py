@@ -258,6 +258,8 @@ def capture_then_process(
     slide_m: float = 0.40,
     still_s: float = 1.0,
     slide_s: float = 2.5,
+    orientation: str = "auto",
+    undistort_alpha: float = 0.0,
     **det_kwargs,
 ) -> dict:
     """Record (or simulate) a slide, then write camera/object CSVs in the same folder."""
@@ -289,6 +291,8 @@ def capture_then_process(
             save_depth=save_depth,
             duration_s=duration_s,
             camera_optical_height_m=optical_height,
+            orientation=orientation,
+            undistort_alpha=undistort_alpha,
         )
     return process_run(
         run_dir=out_dir,

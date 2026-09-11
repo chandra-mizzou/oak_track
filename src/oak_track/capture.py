@@ -16,6 +16,17 @@ from oak_track.io_utils import (
     write_imu_raw_csv,
     write_json,
 )
+from oak_track.orient import (
+    ImageCorrection,
+    apply_invert_quat,
+    apply_invert_vec,
+    build_undistort_maps,
+    correct_bgr,
+    correct_depth,
+    detect_inverted_from_accel,
+    invert_imu_to_cam,
+    rotate_k_180,
+)
 
 
 def _get_imu_name(device) -> str:
@@ -291,7 +302,7 @@ def _frame_timestamp(msg) -> float:
     return float(ts)
 
 
-def _drain_imu(q_imu, imu_t, imu_a, imu_g, imu_q, imu_la) -> tuple[bool, bool]:
+def _drain_imu(q_imu, imu_t, imu_a, imu_g, imu_q, imu_la, invert: bool = False) -> tuple[bool, bool]:
     have_q = False
     have_la = False
     imu_msg = _try_get(q_imu)
@@ -307,13 +318,18 @@ def _drain_imu(q_imu, imu_t, imu_a, imu_g, imu_q, imu_la) -> tuple[bool, bool]:
             continue
         ts_src = getattr(pkt, "acceleroMeter", None) or getattr(pkt, "gyroscope", None)
         ts = _frame_timestamp(ts_src) if ts_src is not None else time.time()
+        if invert:
+            if acc is not None:
+                acc = apply_invert_vec(acc)
+            if gyr is not None:
+                gyr = apply_invert_vec(gyr)
         imu_t.append(ts)
         imu_a.append(acc if acc is not None else np.zeros(3))
         imu_g.append(gyr if gyr is not None else np.zeros(3))
         qv = _packet_quat(getattr(pkt, "rotationVector", None))
         if qv is not None:
             have_q = True
-            imu_q.append(qv)
+            imu_q.append(apply_invert_quat(qv) if invert else qv)
         else:
             imu_q.append(np.array([np.nan, np.nan, np.nan, np.nan]))
         la = _packet_vec(
@@ -321,13 +337,13 @@ def _drain_imu(q_imu, imu_t, imu_a, imu_g, imu_q, imu_la) -> tuple[bool, bool]:
         )
         if la is not None:
             have_la = True
-            imu_la.append(la)
+            imu_la.append(apply_invert_vec(la) if invert else la)
         else:
             imu_la.append(np.array([np.nan, np.nan, np.nan]))
     return have_q, have_la
 
 
-def _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth):
+def _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth, correction: ImageCorrection | None = None, invert: bool = False):
     writer = None
     imu_t, imu_a, imu_g = [], [], []
     imu_q, imu_la = [], []
@@ -340,7 +356,7 @@ def _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth):
         while True:
             if duration_s is not None and (time.time() - t_start) >= duration_s:
                 break
-            hq, hla = _drain_imu(q_imu, imu_t, imu_a, imu_g, imu_q, imu_la)
+            hq, hla = _drain_imu(q_imu, imu_t, imu_a, imu_g, imu_q, imu_la, invert=invert)
             have_q = have_q or hq
             have_la = have_la or hla
             color_frame = _try_get(q_color)
@@ -348,6 +364,8 @@ def _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth):
                 time.sleep(0.001)
                 continue
             img = color_frame.getCvFrame()
+            if correction is not None:
+                img = correct_bgr(cv2, img, correction)
             if writer is None:
                 h, w = img.shape[:2]
                 writer = cv2.VideoWriter(
@@ -363,6 +381,8 @@ def _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth):
                 depth_frame = _try_get(q_depth)
                 if depth_frame is not None:
                     depth = depth_frame.getFrame()
+                    if correction is not None:
+                        depth = correct_depth(cv2, depth, correction)
                     td = _frame_timestamp(depth_frame)
                     cv2.imwrite(str(paths["depth_dir"] / f"{n:06d}.png"), depth.astype(np.uint16))
             frame_idx.append(n)
@@ -390,6 +410,71 @@ def _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth):
     }
 
 
+def _detect_orientation(q_imu, mode: str, seconds: float = 0.6) -> bool:
+    if mode == "inverted":
+        return True
+    if mode == "upright":
+        return False
+    accels = []
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        msg = _try_get(q_imu)
+        if msg is None:
+            time.sleep(0.001)
+            continue
+        packets = getattr(msg, "packets", None) or [msg]
+        for pkt in packets:
+            acc = _packet_vec(getattr(pkt, "acceleroMeter", None))
+            if acc is not None:
+                accels.append(acc)
+    if not accels:
+        print("No IMU during orientation check; assuming inverted (Y-up).")
+        return True
+    inv = detect_inverted_from_accel(np.vstack(accels))
+    mean = np.mean(np.vstack(accels), axis=0)
+    print(f"Gravity probe accel mean = [{mean[0]:.2f}, {mean[1]:.2f}, {mean[2]:.2f}] m/s²")
+    return inv
+
+
+def _make_correction(raw: Calibration, inverted: bool, alpha: float) -> tuple[ImageCorrection, Calibration]:
+    w, h = raw.width, raw.height
+    map1, map2, newK = build_undistort_maps(raw.K, raw.dist, w, h, alpha)
+    K_out = rotate_k_180(newK, w, h) if inverted else newK
+    corr = ImageCorrection(map1=map1, map2=map2, K=K_out, inverted=inverted, width=w, height=h)
+    calib = Calibration(
+        K=K_out.tolist(),
+        dist=[0.0] * max(len(raw.dist), 5),
+        width=w,
+        height=h,
+        baseline_m=raw.baseline_m,
+        imu_to_cam=invert_imu_to_cam(raw.imu_to_cam) if inverted else raw.imu_to_cam,
+        K_left=raw.K_left,
+        inverted=inverted,
+        undistorted=True,
+        K_raw=raw.K,
+        dist_raw=list(raw.dist),
+    )
+    return corr, calib
+
+
+def _run_session(cv2, dai, device, paths, fps, color_size, duration_s, q_color, q_imu, q_depth, orientation: str, undistort_alpha: float):
+    raw = _calibration_from_device(device, dai, int(color_size[0]), int(color_size[1]))
+    print("Hold still: measuring gravity to detect inverted mount...")
+    inverted = _detect_orientation(q_imu, orientation)
+    print(
+        "Mount: inverted (Y-up) — undistorting and rotating frames 180°."
+        if inverted
+        else "Mount: upright — undistorting frames."
+    )
+    corr, calib = _make_correction(raw, inverted, undistort_alpha)
+    save_calibration(paths["calibration"], calib)
+    logs = _capture_loop(
+        cv2, paths, fps, duration_s, q_color, q_imu, q_depth, correction=corr, invert=inverted
+    )
+    logs["inverted"] = inverted
+    return logs
+
+
 def record_oak(
     out_dir: Path,
     table_height: float,
@@ -401,6 +486,8 @@ def record_oak(
     save_depth: bool = True,
     duration_s: Optional[float] = None,
     camera_optical_height_m: float = 0.03,
+    orientation: str = "auto",
+    undistort_alpha: float = 0.0,
 ) -> Path:
     """Record until Ctrl+C or duration_s. Hold still ~1 s at the start for IMU bias."""
     try:
@@ -439,10 +526,6 @@ def record_oak(
         if device is not None:
             imu_name = _get_imu_name(device)
             _set_ir(device, ir_dot_projector)
-            save_calibration(
-                paths["calibration"],
-                _calibration_from_device(device, dai, int(color_size[0]), int(color_size[1])),
-            )
         print(f"Recording on {imu_name}. Hold still 1s, then slide. Ctrl+C to stop.")
         try:
             pipeline.start()
@@ -450,11 +533,20 @@ def record_oak(
                 device = pipeline.getDefaultDevice()
                 imu_name = _get_imu_name(device)
                 _set_ir(device, ir_dot_projector)
-                save_calibration(
-                    paths["calibration"],
-                    _calibration_from_device(device, dai, int(color_size[0]), int(color_size[1])),
-                )
-            logs = _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth)
+            logs = _run_session(
+                cv2,
+                dai,
+                device,
+                paths,
+                fps,
+                color_size,
+                duration_s,
+                q_color,
+                q_imu,
+                q_depth,
+                orientation,
+                undistort_alpha,
+            )
         except RuntimeError as exc:
             raise SystemExit(f"{exc}\n\n{BUSY_HELP}\n\n{UDEV_HELP}") from exc
         finally:
@@ -476,12 +568,21 @@ def record_oak(
             q_color = device.getOutputQueue("color", maxSize=8, blocking=False)
             q_imu = device.getOutputQueue("imu", maxSize=64, blocking=False)
             q_depth = device.getOutputQueue("depth", maxSize=8, blocking=False) if save_depth else None
-            save_calibration(
-                paths["calibration"],
-                _calibration_from_device(device, dai, int(color_size[0]), int(color_size[1])),
-            )
             print(f"Recording on {imu_name}. Hold still 1s, then slide. Ctrl+C to stop.")
-            logs = _capture_loop(cv2, paths, fps, duration_s, q_color, q_imu, q_depth)
+            logs = _run_session(
+                cv2,
+                dai,
+                device,
+                paths,
+                fps,
+                color_size,
+                duration_s,
+                q_color,
+                q_imu,
+                q_depth,
+                orientation,
+                undistort_alpha,
+            )
 
     imu_t = logs["imu_t"]
     imu_q = logs["imu_q"]
@@ -514,6 +615,8 @@ def record_oak(
             "save_depth": save_depth,
             "n_frames": logs["n"],
             "n_imu": len(imu_t),
+            "inverted": bool(logs.get("inverted", False)),
+            "undistorted": True,
             "first_frame_origin": [0.0, 0.0, table_height],
             "world_frame": {
                 "x": "table width / slide, camera-right at t=0",
