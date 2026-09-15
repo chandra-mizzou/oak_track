@@ -1,1 +1,307 @@
 # oak_track
+
+Record an **OAK-D Pro W** while it slides along a table, then:
+
+1. **Part A** — log video + IMU and write a two-column CSV: `frame_number`, `(x, y, z)` of the **camera**, with frame 0 at `(0, 0, h)`.
+2. **Part B** — estimate the **object** on the table as `(x, y, z)` in the same frame, as precisely as this hardware allows.
+
+`h` is the table height. The camera and the object both sit on the table, so both are reported with `z = h`.
+
+**Usual command** — records video, timestamps, and IMU, then writes both CSVs:
+
+```bash
+python run.py --table-height 0.75 --optical-height 0.03
+```
+
+Hold still ~1 second, slide along the table width, then Ctrl+C. To stop after a fixed time instead:
+
+```bash
+python run.py --out runs/slide1 --table-height 0.75 --duration 8
+```
+
+---
+
+## Why IMU-only position is not enough
+
+The OAK-D Pro W IMU is either a **BNO085/BNO086** (9-axis, on-chip fusion) or a **BMI270** (6-axis accel+gyro). Accelerometer double integration drifts by centimetres to metres within a few seconds. That is still what Part A asks for, so the pipeline writes it — but **object coordinates must not rely on IMU translation**.
+
+The accurate object estimate uses, in order of importance:
+
+| Cue | Why it is strong in this setup |
+| --- | --- |
+| Onboard stereo depth (7.5 cm baseline, IR dots) | Object is at 0.8–1.0 m, inside the Pro W’s useful depth band (~0.7–8 m). |
+| Table plane `z = h` | Reduces the object to `(x, y)` on a known plane. |
+| Multi-view while sliding | The slide itself is a **large baseline** (tens of cm). Bearings of the object from many camera X positions triangulate much better than a single 7.5 cm stereo pair. |
+| RGB-D visual odometry | Recovers camera X when the IMU path explodes or stays near zero. |
+| Optional tape measure of the slide | Scales IMU translation (`--slide-distance`) if you want Part A to match the real travel. |
+
+Ray–plane intersection with `z = h` is **not** the primary method: if the optical center is also at height `h`, those rays are parallel to the table. The code therefore uses stereo depth + multi-view, and treats the optical center as `h + optical_height` internally (default 3 cm, the camera body sitting on the table). CSV `z` values stay at `h` as specified.
+
+---
+
+## Coordinate system
+
+Right-handed metres:
+
+- **Origin:** camera at the first video frame, reported as `(0, 0, h)`.
+- **+X:** table width / slide direction (camera-right at t = 0).
+- **+Y:** along the table toward the object (camera-forward at t = 0).
+- **+Z:** up. Table plane is `z = h`.
+
+Camera optical axes follow OpenCV / Luxonis RDF: `x` right, `y` down, `z` forward.
+
+---
+
+## Physical setup (do this carefully)
+
+1. Measure **table height `h`** from the floor to the table top with a tape (mm).
+2. Measure **optical-center height** above the table (typically 2–4 cm for an OAK-D sitting on its bottom). Pass it as `--optical-height`.
+3. Place a **high-contrast object** 80–100 cm in front of the start pose. Best options, in order:
+   - 4×4 ArUco marker (`--detector aruco`) — most precise 2D centroid.
+   - Saturated red / green object on a dull table (`--detector hsv`, default is red).
+4. Put the OAK-D Pro W on the table, USB cable out of the slide path, lens aimed at the object, **not tilted**.
+5. Enable the **IR laser dot projector** (default). It gives the stereo matcher texture on a bare table. Use a **powered USB3 Y-cable** on Pro models; the projector is power-hungry.
+6. Mark the start and end of the slide on the table edge and measure that distance. Optional but useful: `--slide-distance`.
+7. Lighting: no strobe, no strong sunlight on the IR projector. A still second at the beginning is required for IMU bias.
+
+Recommended object distance **≥ 70 cm** so 800p stereo is valid (`MinZ` is ~70 cm at 800p, ~35–40 cm at 400p with extended disparity).
+
+---
+
+## Install
+
+Run these from the **oak_track repo root** (the folder that contains `record.py` and `pyproject.toml`), not from a different OAK project directory.
+
+Prefer `python -m pip` over `pip`. If a venv was moved, recreated, or only half-installed, bash still hashes the old `pip` path and you get `bin/pip: No such file or directory`.
+
+**Repair an existing venv** (for example `venv_oak`):
+
+```bash
+deactivate 2>/dev/null || true
+hash -r
+source venv_oak/bin/activate          # or: source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+**Or create a fresh venv:**
+
+```bash
+deactivate 2>/dev/null || true
+hash -r
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+```
+
+`record.py` / `process.py` add `src/` to `PYTHONPATH` themselves, so you do **not** need `pip install -e ".[device]"`. That editable install is optional.
+
+**Update an existing clone** (after a `git pull` of this branch):
+
+```bash
+cd ~/Documents/VIO/oak_track
+git pull
+source ~/Documents/VIO/OAK/venv_oak/bin/activate   # or your venv
+python -m pip install -r requirements.txt
+```
+
+`requirements.txt` is unchanged for the dense cloud: it is built with **numpy + opencv-python + scipy**, which you already install. No extra library is required to write `cloud.ply`.
+
+Optional, only if you want an interactive 3D viewer:
+
+```bash
+python -m pip install open3d
+python -c "import open3d as o3d; p=o3d.io.read_point_cloud('runs/slide1/cloud.ply'); o3d.visualization.draw_geometries([p])"
+```
+
+To rebuild the cloud from a recording you already have:
+
+```bash
+python process.py --run runs/slide1 --table-height 0.77
+```
+
+Runnable files at the repo root:
+
+| File | What it does |
+| --- | --- |
+| `run.py` | **Record + process in one step** (video, timestamps, IMU, CSVs, dense cloud) |
+| `record.py` | Capture only |
+| `process.py` | Process an existing run folder |
+| `simulate.py` | Synthetic run when no camera is plugged in |
+
+---
+
+## Capture + process (one command)
+
+Hold the camera **still for ~1 second**, then slide it smoothly along the table width. Do not lift it or yaw it. Stop with Ctrl+C (or pass `--duration`).
+
+```bash
+python run.py \
+  --out runs/slide1 \
+  --table-height 0.75 \
+  --optical-height 0.03 \
+  --fps 30 \
+  --mono-resolution 800p
+```
+
+That writes `color.mp4`, `frames.csv` (frame number + timestamps), `imu.csv`, then `camera_imu.csv`, `object.csv`, and a dense `cloud.ply` in the same folder.
+
+The camera is detected automatically: plug the OAK-D into USB, then run `run.py` / `record.py`. DepthAI opens the first OAK it sees. You do not pass a port or device ID. If several OAKs are plugged in, the first one in the USB list is used.
+
+**Linux USB permissions:** if you see `X_LINK_UNBOOTED` / `Insufficient permissions` / `No available devices`, install udev rules once:
+
+```bash
+echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="03e7", MODE="0666"' | sudo tee /etc/udev/rules.d/80-movidius.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Then unplug the camera, plug it back in, wait a few seconds, and rerun. Do not use `sudo python`.
+
+If you instead see `X_LINK_DEVICE_ALREADY_IN_USE`, another program still owns the camera:
+
+```bash
+pgrep -af 'python|depthai'
+pkill -f 'run.py|record.py|depthai'
+```
+
+Unplug, wait 3 seconds, plug back in, then rerun `python run.py ...`.
+
+To split the steps:
+
+```bash
+python record.py --out runs/slide1 --table-height 0.75 --optical-height 0.03
+python process.py --run runs/slide1 --table-height 0.75
+```
+
+On USB2 hosts drop to `--mono-resolution 400p`.
+
+What is stored:
+
+| File | Contents |
+| --- | --- |
+| `color.mp4` | RGB preview stream |
+| `depth/000000.png` … | 16-bit depth in millimetres, aligned to RGB |
+| `imu.csv` | Device timestamps, accel, gyro, optional quaternion / linear accel |
+| `frames.csv` | Frame index ↔ color/depth timestamps |
+| `calibration.json` | Intrinsics, distortion, IMU–camera extrinsics from the EEPROM |
+| `cloud.ply` | Dense RGB-D point cloud in the world frame (written during process) |
+| `cloud.json` | Point count, voxel size, frames used |
+| `cloud_preview.png` | Top-down XY colour preview of the cloud |
+
+---
+
+## Process
+
+```bash
+python process.py \
+  --run runs/slide1 \
+  --table-height 0.75 \
+  --optical-height 0.03 \
+  --detector hsv \
+  --slide-distance 0.42
+```
+
+Use `--detector aruco` if you put a marker on the object. HSV stays locked on the **first** red blob it finds (`--lock-first`, default). A later larger red object in the background will not steal the lock. Pass `--no-lock-first` to go back to “largest blob every frame.” Size change of the same object (closer/farther) does not break the lock.
+
+Dense cloud flags (defaults write `cloud.ply` in the run folder):
+
+```bash
+python process.py --run runs/slide1 --table-height 0.77
+python process.py --run runs/slide1 --cloud-stride 1 --cloud-voxel 0.005   # denser
+python process.py --run runs/slide1 --no-cloud                             # skip
+```
+
+Outputs (two columns, metres):
+
+```text
+frame_number,xyz
+0,"(0.000000, 0.000000, 0.750000)"
+1,"(0.012431, 0.000184, 0.750000)"
+```
+
+| File | Meaning |
+| --- | --- |
+| `camera_imu.csv` | **Part A** — IMU-predicted camera `(x, y, z)`, frame 0 = `(0, 0, h)`, `z = h` |
+| `camera_vo.csv` | RGB-D odometry camera path (used for Part B when it is sane) |
+| `object.csv` | **Part B** — per-frame object `(x, y, h)` |
+| `object_fused.csv` | Single static object position (best overall estimate) |
+| `preview.mp4` | Detections overlaid |
+| `cloud.ply` | Dense coloured point cloud from stored RGB-D + IMU/VO camera poses |
+| `cloud_preview.png` | Top-down (X–Y) preview of that cloud |
+| `summary.json` | Fused object, detection count, RMS reprojection, cloud path |
+
+The cloud is a fusion of stored `color.mp4` / `depth/*.png` with the same IMU/VO camera poses used for object tracking. Default settings back-project every 2nd pixel, keep depth between 0.3–3 m, and voxel-downsample at 1 cm. Open it in MeshLab or CloudCompare; `open3d` is optional (see Install).
+
+---
+
+## How object `(x, y, z)` is computed (not IMU-only, not object homography)
+
+The overlay `obj` is a **static point on the plane `z = h`**. It is **not** taken from IMU translation.
+
+| Cue | Role |
+| --- | --- |
+| HSV / ArUco / depth blob (`--lock-first` / `--no-lock-first`) | Which **pixel** is the object |
+| RGB-D **keypoints** + PnP (`camera_vo.csv`) | Camera pose while you slide (primary) |
+| IMU | Attitude + Part A `camera_imu.csv` only; translation is a fallback |
+| **Plane-induced homography** | Pixel ray ∩ table plane `z = h` → `(x, y, h)` |
+| OAK stereo depth | Gate: if depth is much farther than the table along that ray, treat as **background** and drop the frame |
+| Slide (many views) | Wide-baseline triangulation + bundle refine of one object |
+
+There is **no** homography estimated from the object’s appearance. The homography is the one **induced by the known table/ground plane** given camera pose and `K`.
+
+`--lock-first` (default) keeps the first blob; `--no-lock-first` re-picks the largest blob every frame.
+
+Reprocess a run:
+
+```bash
+python process.py --run runs/slide1 --table-height 0.77 --lock-first
+```
+
+`preview.mp4` now labels `cam_vo` or `cam_imu` for the pose **used for the object**, not the raw IMU path. See `localization.json` for per-frame `plane` / `fused` / `rejected_background`.
+
+### Table-top vs 3 km — same geometry, different sensors
+
+The math `bearing + observer pose + ground plane` is the same. The **OAK-D Pro W pipeline as-is will not locate objects at 3 km**.
+
+| | Table-top (this code, `--scene table`) | 3 km (`--scene longrange` geometry only) |
+| --- | --- | --- |
+| Observer pose | RGB-D VO on a 20–50 cm slide | GNSS/RTK + INS, surveyed tripod |
+| Plane | table `z = h` | WGS-84 / local ENU + DEM |
+| Range cue | 7.5 cm stereo, valid ~0.7–8 m | **not** OAK stereo (error ∝ Z²). Laser, radar, or a second camera kilometres away |
+| Attitude | IMU lock after 1 s still | 1 mrad pitch error → **3 m** at 3 km; needs a calibrated long lens |
+
+`--scene longrange` turns stereo off and widens the range gate. You still must feed a real geodetic camera pose; the table IMU/VO path is meaningless at 3 km.
+
+For a future 3 km system keep `oak_track/ranging.py` (`pixel_to_plane`, multi-view DLT) and replace capture/VO with GNSS+INS and a long focal length. Two observers (or a long drive) give triangulation; one observer only gives a ray-ground intersect whose range is only as good as pitch and the DEM.
+
+---
+
+## Dry run without hardware
+
+```bash
+python run.py --simulate --out runs/sim --table-height 0.75
+```
+
+---
+
+## Practical checklist for best object accuracy
+
+1. Measure `h` and optical height; do not guess.
+2. Hold still 1 s, then slide slowly (1–3 s over ≥ 20 cm). Faster slides starve the integrator and blur the rolling-shutter RGB camera (IMX378 variant).
+3. Keep pitch/roll fixed; only translate along X.
+4. Use IR dots + 800p + USB3.
+5. High-contrast object or ArUco; avoid objects the same colour as the table.
+6. Pass `--slide-distance` from a tape.
+7. Trust `object_fused.csv` more than any single row of `object.csv`.
+8. Treat `camera_imu.csv` as the requested IMU log, not as ground truth.
+
+---
+
+## Tests
+
+```bash
+pip install -e ".[dev]"
+pytest -q
+```
