@@ -61,6 +61,19 @@ def _add_process_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--still-time", type=float, default=1.0)
     p.add_argument("--aruco-id", type=int, default=0)
     p.add_argument(
+        "--lock-first",
+        dest="lock_first",
+        action="store_true",
+        default=True,
+        help="After the first detection, stay on that object (ignore a later larger blob)",
+    )
+    p.add_argument(
+        "--no-lock-first",
+        dest="lock_first",
+        action="store_false",
+        help="Every frame pick the largest red/depth blob (can jump to a new object)",
+    )
+    p.add_argument(
         "--slide-distance",
         type=float,
         default=None,
@@ -206,6 +219,7 @@ def main(argv=None) -> int:
             still_time_s=args.still_time,
             write_preview=not args.no_preview,
             aruco_id=args.aruco_id,
+            lock_first=args.lock_first,
             slide_distance=args.slide_distance,
             **_cloud_kwargs(args),
         )
@@ -236,6 +250,7 @@ def main(argv=None) -> int:
             slide_distance=args.slide_distance,
             simulate=args.simulate,
             aruco_id=args.aruco_id,
+            lock_first=args.lock_first,
             orientation=args.orientation,
             undistort_alpha=args.undistort_alpha,
             **_cloud_kwargs(args),

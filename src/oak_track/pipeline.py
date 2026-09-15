@@ -143,7 +143,7 @@ def process_run(
     tracker_kwargs = {
         k: v
         for k, v in det_kwargs.items()
-        if k in {"aruco_id", "hsv_lower", "hsv_upper", "hsv_lower2", "hsv_upper2", "depth_min_m", "depth_max_m"}
+        if k in {"aruco_id", "lock_first", "hsv_lower", "hsv_upper", "hsv_lower2", "hsv_upper2", "depth_min_m", "depth_max_m"}
     }
     tracker = ObjectTracker(mode=detector, **tracker_kwargs)
     uvs = np.full((n, 2), np.nan)

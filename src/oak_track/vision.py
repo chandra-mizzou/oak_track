@@ -31,12 +31,9 @@ def _red_mask(bgr: np.ndarray, lo1, hi1, lo2, hi2) -> np.ndarray:
     return mask
 
 
-def _largest_blob(mask: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
-    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not cnts:
-        return None
-    c = max(cnts, key=cv2.contourArea)
-    if cv2.contourArea(c) < 20:
+def _blob_from_contour(c) -> Optional[tuple[np.ndarray, np.ndarray, float]]:
+    area = float(cv2.contourArea(c))
+    if area < 20:
         return None
     m = cv2.moments(c)
     if m["m00"] <= 1e-6:
@@ -44,7 +41,47 @@ def _largest_blob(mask: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
     u = m["m10"] / m["m00"]
     v = m["m01"] / m["m00"]
     x, y, w, h = cv2.boundingRect(c)
-    return np.array([u, v], dtype=np.float64), np.array([x, y, w, h], dtype=np.float64)
+    return (
+        np.array([u, v], dtype=np.float64),
+        np.array([x, y, w, h], dtype=np.float64),
+        area,
+    )
+
+
+def _iter_blobs(mask: np.ndarray) -> list[tuple[np.ndarray, np.ndarray, float]]:
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        blob = _blob_from_contour(c)
+        if blob is not None:
+            out.append(blob)
+    return out
+
+
+def _pick_blob(
+    mask: np.ndarray,
+    prefer_uv: Optional[np.ndarray] = None,
+    max_jump_px: Optional[float] = None,
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Largest blob, or the blob nearest ``prefer_uv`` if that jump is small enough."""
+    blobs = _iter_blobs(mask)
+    if not blobs:
+        return None
+    if prefer_uv is None:
+        uv, bbox, _ = max(blobs, key=lambda b: b[2])
+        return uv, bbox
+    prefer_uv = np.asarray(prefer_uv, dtype=np.float64).reshape(2)
+    dists = [float(np.linalg.norm(b[0] - prefer_uv)) for b in blobs]
+    i = int(np.argmin(dists))
+    if max_jump_px is not None and dists[i] > float(max_jump_px):
+        return None
+    uv, bbox, _ = blobs[i]
+    return uv, bbox
+
+
+def _largest_blob(mask: np.ndarray) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    picked = _pick_blob(mask)
+    return picked
 
 
 def median_depth_m(depth_mm: Optional[np.ndarray], uv: np.ndarray, bbox: Optional[np.ndarray] = None) -> Optional[float]:
@@ -74,9 +111,11 @@ def detect_hsv(
     hi1=(10, 255, 255),
     lo2=(170, 120, 70),
     hi2=(180, 255, 255),
+    prefer_uv: Optional[np.ndarray] = None,
+    max_jump_px: Optional[float] = None,
 ) -> Optional[Detection]:
     mask = _red_mask(bgr, lo1, hi1, lo2, hi2)
-    blob = _largest_blob(mask)
+    blob = _pick_blob(mask, prefer_uv=prefer_uv, max_jump_px=max_jump_px)
     if blob is None:
         return None
     uv, bbox = blob
@@ -88,6 +127,8 @@ def detect_depth_blob(
     depth_mm: np.ndarray,
     zmin: float = 0.55,
     zmax: float = 1.40,
+    prefer_uv: Optional[np.ndarray] = None,
+    max_jump_px: Optional[float] = None,
 ) -> Optional[Detection]:
     z = depth_mm.astype(np.float64) / 1000.0
     mask = ((z >= zmin) & (z <= zmax)).astype(np.uint8) * 255
@@ -97,7 +138,7 @@ def detect_depth_blob(
     dist = ((xs - w / 2.0) / max(w / 2.0, 1)) ** 2 + ((ys - h / 3.0) / max(h / 2.0, 1)) ** 2
     mask[dist > 1.2] = 0
     mask = cv2.medianBlur(mask, 7)
-    blob = _largest_blob(mask)
+    blob = _pick_blob(mask, prefer_uv=prefer_uv, max_jump_px=max_jump_px)
     if blob is None:
         return None
     uv, bbox = blob
@@ -132,8 +173,10 @@ class ObjectTracker:
     def __init__(self, mode: str = "hsv", **kwargs) -> None:
         self.mode = mode
         self.kwargs = kwargs
+        self.lock_first = bool(kwargs.get("lock_first", True))
         self._tracker = None
         self._ok = False
+        self._locked_uv: Optional[np.ndarray] = None
 
     def _init_csrt(self, bgr, bbox) -> None:
         x, y, w, h = [int(v) for v in bbox]
@@ -144,8 +187,16 @@ class ObjectTracker:
         if self._tracker is not None:
             self._ok = self._tracker.init(bgr, (x, y, w, h))
 
+    def _gate_px(self, bgr: np.ndarray) -> Optional[float]:
+        if not self.lock_first or self._locked_uv is None:
+            return None
+        h, w = bgr.shape[:2]
+        return 0.25 * float(max(h, w))
+
     def detect(self, bgr: np.ndarray, depth_mm: Optional[np.ndarray]) -> Optional[Detection]:
         mode = self.mode
+        prefer = self._locked_uv if self.lock_first else None
+        max_jump = self._gate_px(bgr)
         det = None
         if mode == "aruco":
             det = detect_aruco(bgr, depth_mm, int(self.kwargs.get("aruco_id", 0)))
@@ -156,6 +207,8 @@ class ObjectTracker:
                     depth_mm,
                     float(self.kwargs.get("depth_min_m", 0.55)),
                     float(self.kwargs.get("depth_max_m", 1.40)),
+                    prefer_uv=prefer,
+                    max_jump_px=max_jump,
                 )
         else:
             det = detect_hsv(
@@ -165,17 +218,20 @@ class ObjectTracker:
                 self.kwargs.get("hsv_upper", (10, 255, 255)),
                 self.kwargs.get("hsv_lower2", (170, 120, 70)),
                 self.kwargs.get("hsv_upper2", (180, 255, 255)),
+                prefer_uv=prefer,
+                max_jump_px=max_jump,
             )
-        if det is not None and self._tracker is None and det.bbox is not None:
-            self._init_csrt(bgr, det.bbox)
-            return det
         if det is None and self._tracker is not None:
             ok, box = self._tracker.update(bgr)
             if ok:
                 x, y, w, h = box
                 uv = np.array([x + w / 2.0, y + h / 2.0])
                 bbox = np.array([x, y, w, h])
-                return Detection(uv=uv, depth_m=median_depth_m(depth_mm, uv, bbox), bbox=bbox, score=0.6)
+                det = Detection(uv=uv, depth_m=median_depth_m(depth_mm, uv, bbox), bbox=bbox, score=0.6)
+        if det is not None:
+            self._locked_uv = det.uv.copy()
+            if self._tracker is None and det.bbox is not None:
+                self._init_csrt(bgr, det.bbox)
         return det
 
 

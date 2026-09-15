@@ -203,7 +203,7 @@ python process.py \
   --slide-distance 0.42
 ```
 
-Use `--detector aruco` if you put a marker on the object.
+Use `--detector aruco` if you put a marker on the object. HSV stays locked on the **first** red blob it finds (`--lock-first`, default). A later larger red object in the background will not steal the lock. Pass `--no-lock-first` to go back to “largest blob every frame.” Size change of the same object (closer/farther) does not break the lock.
 
 Dense cloud flags (defaults write `cloud.ply` in the run folder):
 

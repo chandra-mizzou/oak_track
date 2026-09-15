@@ -35,6 +35,7 @@ def test_process_help():
     assert "--run" in r.stdout
     assert "--detector" in r.stdout
     assert "--no-cloud" in r.stdout
+    assert "--lock-first" in r.stdout or "--no-lock-first" in r.stdout
     assert "--cloud-stride" in r.stdout
 
 
