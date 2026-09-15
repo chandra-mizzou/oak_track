@@ -103,6 +103,27 @@ def _add_process_args(p: argparse.ArgumentParser) -> None:
         default=0.01,
         help="Voxel size in metres for the fused cloud (0 keeps every point)",
     )
+    p.add_argument(
+        "--scene",
+        choices=["table", "longrange"],
+        default="table",
+        help="table: OAK stereo + table plane. longrange: plane/bearings only (no stereo).",
+    )
+    p.add_argument("--range-min", type=float, default=None, help="Min object Y (m). Table default 0.3")
+    p.add_argument("--range-max", type=float, default=None, help="Max object Y (m). Table default 3.0")
+    p.add_argument(
+        "--assume-on-plane",
+        dest="assume_on_plane",
+        action="store_true",
+        default=True,
+        help="Object sits on z=h; reject stereo that looks like background",
+    )
+    p.add_argument(
+        "--no-assume-on-plane",
+        dest="assume_on_plane",
+        action="store_false",
+        help="Trust stereo depth even when it disagrees with the table plane",
+    )
 
 
 def _default_out_dir() -> Path:
@@ -116,6 +137,10 @@ def _print_summary(summary: dict) -> None:
     print("Fused object (x,y,z): ", tuple(summary["object_fused_xyz"]))
     print("Detections used:      ", summary["n_object_detections"])
     print("RMS reprojection px:  ", summary["object_rms_reproj_px"])
+    if summary.get("pose_source"):
+        print("Camera pose source:   ", summary["pose_source"])
+    if summary.get("n_rejected_background"):
+        print("Rejected (background):", summary["n_rejected_background"])
     if summary.get("cloud_ply"):
         print("Dense cloud PLY:      ", summary["cloud_ply"])
         print("Cloud points:         ", summary.get("cloud_n_points"))
@@ -221,6 +246,10 @@ def main(argv=None) -> int:
             aruco_id=args.aruco_id,
             lock_first=args.lock_first,
             slide_distance=args.slide_distance,
+            scene=args.scene,
+            range_min=args.range_min,
+            range_max=args.range_max,
+            assume_on_plane=args.assume_on_plane,
             **_cloud_kwargs(args),
         )
         _print_summary(summary)
@@ -253,6 +282,10 @@ def main(argv=None) -> int:
             lock_first=args.lock_first,
             orientation=args.orientation,
             undistort_alpha=args.undistort_alpha,
+            scene=args.scene,
+            range_min=args.range_min,
+            range_max=args.range_max,
+            assume_on_plane=args.assume_on_plane,
             **_cloud_kwargs(args),
         )
         print(f"Timestamps: {out_dir / 'frames.csv'}")

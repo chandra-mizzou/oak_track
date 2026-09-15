@@ -234,6 +234,26 @@ def pixel_ray_cam(K: np.ndarray, uv: np.ndarray) -> np.ndarray:
     return normalize(backproject(K, uv, 1.0))
 
 
+def pixel_ray_world(pose: Pose, K: np.ndarray, uv: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Return (camera_origin_world, unit_direction_world) for a pixel."""
+    d_cam = pixel_ray_cam(K, uv)
+    d_w = pose.R @ d_cam
+    n = np.linalg.norm(d_w)
+    if n < 1e-12:
+        return pose.t.copy(), d_w
+    return pose.t.copy(), d_w / n
+
+
+def pixel_to_plane(K: np.ndarray, pose: Pose, uv: np.ndarray, plane_z: float) -> np.ndarray | None:
+    """Plane-induced mapping: image pixel → point on the horizontal plane z = plane_z.
+
+    This is the homography induced by that plane (no IMU translation required
+    beyond the camera pose used to form the ray).
+    """
+    origin, direction = pixel_ray_world(pose, K, uv)
+    return ray_plane_intersection(origin, direction, plane_z)
+
+
 def transform_points(R: np.ndarray, t: np.ndarray, pts: np.ndarray) -> np.ndarray:
     pts = np.asarray(pts, dtype=np.float64)
     return pts @ R.T + t.reshape(1, 3)

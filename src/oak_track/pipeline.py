@@ -22,6 +22,7 @@ from oak_track.io_utils import (
 )
 from oak_track.cloud import write_run_cloud
 from oak_track.localize import fuse_object
+from oak_track.ranging import GroundPlaneConfig
 from oak_track.vision import ObjectTracker, stereo_visual_odometry
 
 
@@ -95,6 +96,10 @@ def process_run(
     cloud_voxel: float = 0.01,
     cloud_depth_min: float = 0.3,
     cloud_depth_max: float = 3.0,
+    scene: str = "table",
+    range_min: Optional[float] = None,
+    range_max: Optional[float] = None,
+    assume_on_plane: bool = True,
     **det_kwargs,
 ) -> dict:
     run_dir = Path(run_dir)
@@ -121,12 +126,12 @@ def process_run(
 
     raw = read_imu_raw_csv(paths["imu"])
     samples = _imu_samples(raw)
-    cfg = IMUOdometryConfig(
+    imu_cfg = IMUOdometryConfig(
         table_height=h,
         optical_height=z_off,
         still_time_s=float(meta.get("still_time_s", still_time_s)),
     )
-    imu_state = integrate_imu(samples, cfg)
+    imu_state = integrate_imu(samples, imu_cfg)
     imu_poses = poses_at_times(imu_state, t_color)
     if slide_distance is not None:
         dx = imu_poses[-1].t[0] - imu_poses[0].t[0]
@@ -166,6 +171,15 @@ def process_run(
         except Exception:
             vo_poses = None
 
+    if scene == "longrange":
+        plane_cfg = GroundPlaneConfig.longrange(h)
+    else:
+        plane_cfg = GroundPlaneConfig.table(h, assume_on_plane=assume_on_plane)
+    if range_min is not None:
+        plane_cfg.range_min_m = float(range_min)
+    if range_max is not None:
+        plane_cfg.range_max_m = float(range_max)
+
     est, used_poses = fuse_object(
         imu_poses,
         vo_poses if vo_poses is not None else None,
@@ -177,6 +191,7 @@ def process_run(
         depth_weight=float(det_kwargs.get("depth_weight", 0.25)),
         smooth_weight=float(det_kwargs.get("smooth_weight", 5.0)),
         slide_y_weight=float(det_kwargs.get("slide_y_weight", 8.0)),
+        cfg=plane_cfg,
     )
     obj_frames = np.tile(est.xyz, (n, 1))
     # Per-frame measurements where available, fused value elsewhere.
@@ -202,6 +217,9 @@ def process_run(
 
     if write_preview and color:
         hgt, wdt = color[0].shape[:2]
+        used_xyz = np.stack([p.t.copy() for p in used_poses[:n]])
+        used_xyz[:, 2] = h
+        cam_tag = "vo" if est.pose_source == "vo" else "imu"
         wr = cv2.VideoWriter(
             str(paths["preview"]), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (wdt, hgt)
         )
@@ -211,7 +229,7 @@ def process_run(
                 cv2.circle(vis, (int(uvs[i, 0]), int(uvs[i, 1])), 8, (0, 255, 0), 2)
             cv2.putText(
                 vis,
-                f"cam {format_xyz(cam_xyz[i], 3)}",
+                f"cam_{cam_tag} {format_xyz(used_xyz[i], 3)}",
                 (12, 24),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
@@ -257,8 +275,29 @@ def process_run(
         "first_frame_origin": [0.0, 0.0, h],
         "cloud_ply": None if cloud_meta is None else cloud_meta.get("cloud_ply"),
         "cloud_n_points": None if cloud_meta is None else cloud_meta.get("n_points"),
+        "pose_source": est.pose_source,
+        "scene": scene,
+        "n_rejected_background": int(est.n_rejected_background),
+        "object_method": "ground_plane_homography+stereo_gate+multiview",
     }
     write_json(run_dir / "summary.json", summary)
+    write_json(
+        run_dir / "localization.json",
+        {
+            "pose_source": est.pose_source,
+            "scene": scene,
+            "range_min_m": plane_cfg.range_min_m,
+            "range_max_m": plane_cfg.range_max_m,
+            "assume_on_plane": plane_cfg.assume_on_plane,
+            "use_stereo": plane_cfg.use_stereo,
+            "n_rejected": int(est.n_rejected_background),
+            "frame_sources": est.frame_sources,
+            "note": (
+                "Object XYZ is ray∩plane (homography induced by z=h), gated by stereo. "
+                "IMU translation is not the primary pose. OAK stereo is not valid at km range."
+            ),
+        },
+    )
     return summary
 
 
@@ -290,6 +329,10 @@ def capture_then_process(
     cloud_voxel: float = 0.01,
     cloud_depth_min: float = 0.3,
     cloud_depth_max: float = 3.0,
+    scene: str = "table",
+    range_min: Optional[float] = None,
+    range_max: Optional[float] = None,
+    assume_on_plane: bool = True,
     **det_kwargs,
 ) -> dict:
     """Record (or simulate) a slide, then write camera/object CSVs in the same folder."""
@@ -338,5 +381,9 @@ def capture_then_process(
         cloud_voxel=cloud_voxel,
         cloud_depth_min=cloud_depth_min,
         cloud_depth_max=cloud_depth_max,
+        scene=scene,
+        range_min=range_min,
+        range_max=range_max,
+        assume_on_plane=assume_on_plane,
         **det_kwargs,
     )

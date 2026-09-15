@@ -236,22 +236,45 @@ The cloud is a fusion of stored `color.mp4` / `depth/*.png` with the same IMU/VO
 
 ---
 
-## How Part B is computed (precision path)
+## How object `(x, y, z)` is computed (not IMU-only, not object homography)
 
-For each frame with a detection `(u, v)` and median stereo depth `Z` in a small window:
+The overlay `obj` is a **static point on the plane `z = h`**. It is **not** taken from IMU translation.
 
-1. Back-project to a camera-frame point with the RGB intrinsics.
-2. Transform into the world using the camera pose (VO if the recovered slide is 5 cm–2 m, otherwise IMU).
-3. Snap `z` to `h`.
-4. Jointly refine **camera X(t), Y(t)** and a **static object (X, Y, h)** with Huber-weighted reprojection + depth residuals, a smoothness prior, and `Y_camera ≈ 0` (straight slide along the table width).
+| Cue | Role |
+| --- | --- |
+| HSV / ArUco / depth blob (`--lock-first` / `--no-lock-first`) | Which **pixel** is the object |
+| RGB-D **keypoints** + PnP (`camera_vo.csv`) | Camera pose while you slide (primary) |
+| IMU | Attitude + Part A `camera_imu.csv` only; translation is a fallback |
+| **Plane-induced homography** | Pixel ray ∩ table plane `z = h` → `(x, y, h)` |
+| OAK stereo depth | Gate: if depth is much farther than the table along that ray, treat as **background** and drop the frame |
+| Slide (many views) | Wide-baseline triangulation + bundle refine of one object |
 
-That last step is what uses the slide as a wide-baseline stereo rig. Expect roughly:
+There is **no** homography estimated from the object’s appearance. The homography is the one **induced by the known table/ground plane** given camera pose and `K`.
 
-- **Y (range):** ~1–3 cm with 800p subpixel depth + IR dots at 1 m, better after multi-frame fusion.
-- **X (along slide):** limited by camera-path error. VO + `--slide-distance` typically keeps this in the low centimetres. IMU-only X can be much worse.
-- **Z:** exactly `h` by construction in the CSV. Internally the optical center is `h + optical_height`.
+`--lock-first` (default) keeps the first blob; `--no-lock-first` re-picks the largest blob every frame.
 
-Put an ArUco marker on the object if you need the tightest `(u, v)` and a known size for a PnP check.
+Reprocess a run:
+
+```bash
+python process.py --run runs/slide1 --table-height 0.77 --lock-first
+```
+
+`preview.mp4` now labels `cam_vo` or `cam_imu` for the pose **used for the object**, not the raw IMU path. See `localization.json` for per-frame `plane` / `fused` / `rejected_background`.
+
+### Table-top vs 3 km — same geometry, different sensors
+
+The math `bearing + observer pose + ground plane` is the same. The **OAK-D Pro W pipeline as-is will not locate objects at 3 km**.
+
+| | Table-top (this code, `--scene table`) | 3 km (`--scene longrange` geometry only) |
+| --- | --- | --- |
+| Observer pose | RGB-D VO on a 20–50 cm slide | GNSS/RTK + INS, surveyed tripod |
+| Plane | table `z = h` | WGS-84 / local ENU + DEM |
+| Range cue | 7.5 cm stereo, valid ~0.7–8 m | **not** OAK stereo (error ∝ Z²). Laser, radar, or a second camera kilometres away |
+| Attitude | IMU lock after 1 s still | 1 mrad pitch error → **3 m** at 3 km; needs a calibrated long lens |
+
+`--scene longrange` turns stereo off and widens the range gate. You still must feed a real geodetic camera pose; the table IMU/VO path is meaningless at 3 km.
+
+For a future 3 km system keep `oak_track/ranging.py` (`pixel_to_plane`, multi-view DLT) and replace capture/VO with GNSS+INS and a long focal length. Two observers (or a long drive) give triangulation; one observer only gives a ray-ground intersect whose range is only as good as pitch and the DEM.
 
 ---
 

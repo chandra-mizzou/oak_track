@@ -1,11 +1,15 @@
-"""Precise object (x, y, z) on the table from multi-view stereo + slide prior.
+"""Precise object (x, y, z) on a known ground/table plane.
 
-IMU translation is too noisy to be the primary pose for Part B. This module:
+Object localisation is **not** IMU-only and does **not** estimate a homography
+from the object. Steps:
 
-1. Back-projects each detection with stereo depth into the world.
-2. Robustly averages those points onto the table plane z = h.
-3. Jointly refines camera slide X(t) and a static object (X, Y, h) with
-   reprojection + depth residuals (the slide itself is a large baseline).
+1. Detect the object in pixels (HSV/ArUco/depth blob; optional lock-first).
+2. Camera pose from RGB-D **keypoint** visual odometry (PnP on stereo depth),
+   with IMU used for Part A logging and as a fallback path.
+3. Each detection → world point via **plane-induced homography** (ray ∩ z = h)
+   gated by stereo depth so background blobs are rejected.
+4. Wide-baseline triangulation + joint refine of camera X(t) and one static
+   object (X, Y, h).
 """
 
 from __future__ import annotations
@@ -17,6 +21,12 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from oak_track.geometry import Pose, backproject, project_point, world_from_cam_point
+from oak_track.ranging import (
+    GroundPlaneConfig,
+    detections_on_plane,
+    pose_source_vo_or_imu,
+    triangulate_static_object,
+)
 
 
 @dataclass
@@ -25,6 +35,9 @@ class ObjectEstimate:
     per_frame: np.ndarray  # (N, 3), nan where missing
     rms_reproj_px: float
     n_used: int
+    pose_source: str = "imu"
+    n_rejected_background: int = 0
+    frame_sources: list[str] | None = None
 
 
 def detections_to_world(
@@ -33,20 +46,13 @@ def detections_to_world(
     depths: np.ndarray,
     K: np.ndarray,
     table_height: float,
+    cfg: GroundPlaneConfig | None = None,
 ) -> np.ndarray:
     """Per-frame object points in world; z forced to table height when finite."""
-    n = len(poses)
-    out = np.full((n, 3), np.nan)
-    for i in range(n):
-        if not np.isfinite(uvs[i]).all():
-            continue
-        if not np.isfinite(depths[i]) or depths[i] <= 0.05:
-            continue
-        p_cam = backproject(K, uvs[i], float(depths[i]))
-        p_w = world_from_cam_point(poses[i], p_cam)
-        p_w[2] = table_height
-        out[i] = p_w
-    return out
+    if cfg is None:
+        cfg = GroundPlaneConfig.table(table_height)
+    xyz, _ = detections_on_plane(poses, uvs, depths, K, cfg)
+    return xyz
 
 
 def robust_median_xyz(points: np.ndarray) -> Optional[np.ndarray]:
@@ -82,24 +88,53 @@ def refine_slide_and_object(
     depth_weight: float = 0.25,
     smooth_weight: float = 5.0,
     slide_y_weight: float = 8.0,
+    cfg: GroundPlaneConfig | None = None,
+    pose_source: str = "imu",
 ) -> ObjectEstimate:
+    if cfg is None:
+        cfg = GroundPlaneConfig.table(table_height)
     n = len(poses)
     uvs = np.asarray(uvs, dtype=np.float64)
     depths = np.asarray(depths, dtype=np.float64)
-    valid = np.isfinite(uvs).all(axis=1)
+    pts0, sources = detections_on_plane(poses, uvs, depths, K, cfg)
+    n_rej = int(sum(s.startswith("rejected") for s in sources))
+    valid = np.isfinite(uvs).all(axis=1) & np.isfinite(pts0).all(axis=1)
     if valid.sum() < 3:
-        pts = detections_to_world(poses, uvs, depths, K, table_height)
-        est = robust_median_xyz(pts)
+        # Fall back to any pixel with a detection if the plane gate wiped them.
+        valid_uv = np.isfinite(uvs).all(axis=1)
+        est = robust_median_xyz(pts0)
+        if est is None:
+            raw = np.full((n, 3), np.nan)
+            for i in np.where(valid_uv)[0]:
+                if np.isfinite(depths[i]) and depths[i] > 0.05:
+                    p = world_from_cam_point(poses[i], backproject(K, uvs[i], float(depths[i])))
+                    p[2] = table_height
+                    raw[i] = p
+            est = robust_median_xyz(raw)
+            pts0 = raw
         xyz = est if est is not None else np.array([np.nan, np.nan, table_height])
         xyz[2] = table_height
-        return ObjectEstimate(xyz=xyz, per_frame=pts, rms_reproj_px=np.nan, n_used=int(valid.sum()))
+        return ObjectEstimate(
+            xyz=xyz,
+            per_frame=pts0,
+            rms_reproj_px=np.nan,
+            n_used=int(np.isfinite(pts0).all(axis=1).sum()),
+            pose_source=pose_source,
+            n_rejected_background=n_rej,
+            frame_sources=sources,
+        )
 
     cam_t = np.stack([p.t.copy() for p in poses])
     cam_R = np.stack([p.R.copy() for p in poses])
-    pts0 = detections_to_world(poses, uvs, depths, K, table_height)
     seed = robust_median_xyz(pts0)
+    tri = triangulate_static_object(poses, uvs, K, table_height)
+    if seed is None and tri is not None:
+        seed = tri
     if seed is None:
         seed = np.array([0.0, 0.9, table_height])
+    if tri is not None and np.isfinite(tri).all():
+        # Blend DLT range into the seed (helps when stereo latched on background).
+        seed = np.array([0.5 * (seed[0] + tri[0]), 0.5 * (seed[1] + tri[1]), table_height])
 
     # Unknowns: cam_x[n], cam_y[n], obj_x, obj_y
     x0 = np.concatenate([cam_t[:, 0], cam_t[:, 1], seed[:2]])
@@ -125,7 +160,10 @@ def refine_slide_and_object(
             uv_hat = project_point(K, p_cam)
             ruv = uvs[i] - uv_hat
             res.extend(_huber(ruv, 4.0).tolist())
-            if np.isfinite(depths[i]) and depths[i] > 0.05:
+            if np.isfinite(pts0[i]).all():
+                res.append(2.0 * _huber(np.array([ox - pts0[i, 0]]), 0.08)[0])
+                res.append(2.0 * _huber(np.array([oy - pts0[i, 1]]), 0.08)[0])
+            if cfg.use_stereo and np.isfinite(depths[i]) and 0.05 < depths[i] <= cfg.stereo_max_m:
                 res.append(depth_weight * _huber(np.array([p_cam[2] - depths[i]]), 0.08)[0])
         # Slide prior: stay near initial VO/IMU path and y ≈ 0.
         for i in range(n):
@@ -141,12 +179,13 @@ def refine_slide_and_object(
     cx, cy, ox, oy = pack(sol.x)
     xyz = np.array([ox, oy, table_height], dtype=np.float64)
 
-    # Per-frame world points using refined camera translation, original rotation.
     per = np.full((n, 3), np.nan)
     reproj = []
     for i in idx:
         pose = Pose(cam_R[i], np.array([cx[i], cy[i], z_cam]))
-        if np.isfinite(depths[i]) and depths[i] > 0.05:
+        if np.isfinite(pts0[i]).all():
+            per[i] = pts0[i]
+        elif cfg.use_stereo and np.isfinite(depths[i]) and depths[i] > 0.05:
             per[i] = world_from_cam_point(pose, backproject(K, uvs[i], depths[i]))
             per[i, 2] = table_height
         C = pose.t
@@ -156,31 +195,15 @@ def refine_slide_and_object(
             if np.isfinite(err).all():
                 reproj.append(np.linalg.norm(err))
     rms = float(np.sqrt(np.mean(np.square(reproj)))) if reproj else float("nan")
-    return ObjectEstimate(xyz=xyz, per_frame=per, rms_reproj_px=rms, n_used=len(idx))
-
-
-def _path_score(
-    poses: list[Pose],
-    uvs: np.ndarray,
-    depths: np.ndarray,
-    K: np.ndarray,
-    table_height: float,
-) -> float:
-    """Lower is better: object should look static at a plausible table range."""
-    pts = detections_to_world(poses, uvs, depths, K, table_height)
-    valid = pts[np.isfinite(pts).all(axis=1)]
-    if len(valid) < 5:
-        return 1e9
-    med = np.median(valid, axis=0)
-    if not (0.35 < med[1] < 1.8):
-        return 1e9
-    spread = float(np.median(np.linalg.norm(valid[:, :2] - med[:2], axis=1)))
-    span = abs(float(poses[-1].t[0] - poses[0].t[0]))
-    if span > 2.5:
-        return 1e9
-    # Tiny bonus for having actually slid; huge penalty for a frozen camera.
-    motion_pen = 0.15 if span < 0.04 else 0.0
-    return spread + motion_pen
+    return ObjectEstimate(
+        xyz=xyz,
+        per_frame=per,
+        rms_reproj_px=rms,
+        n_used=len(idx),
+        pose_source=pose_source,
+        n_rejected_background=n_rej,
+        frame_sources=sources,
+    )
 
 
 def fuse_object(
@@ -194,14 +217,12 @@ def fuse_object(
     depth_weight: float = 0.25,
     smooth_weight: float = 5.0,
     slide_y_weight: float = 8.0,
+    cfg: GroundPlaneConfig | None = None,
 ) -> tuple[ObjectEstimate, list[Pose]]:
-    """Pick the camera path that keeps the object most stationary, then refine."""
-    poses = imu_poses
-    if vo_poses is not None and len(vo_poses) == len(imu_poses):
-        s_imu = _path_score(imu_poses, uvs, depths, K, table_height)
-        s_vo = _path_score(vo_poses, uvs, depths, K, table_height)
-        if s_vo < s_imu:
-            poses = vo_poses
+    """Use VO camera path when the slide is recovered, then refine."""
+    if cfg is None:
+        cfg = GroundPlaneConfig.table(table_height)
+    poses, source = pose_source_vo_or_imu(imu_poses, vo_poses, uvs, depths, K, cfg)
     est = refine_slide_and_object(
         poses,
         uvs,
@@ -212,5 +233,7 @@ def fuse_object(
         depth_weight=depth_weight,
         smooth_weight=smooth_weight,
         slide_y_weight=slide_y_weight,
+        cfg=cfg,
+        pose_source=source,
     )
     return est, poses
